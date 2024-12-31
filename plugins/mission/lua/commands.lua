@@ -200,32 +200,37 @@ end
 function dcsbot.startMission(json)
     log.write('DCSServerBot', log.DEBUG, 'Mission: startMission()')
     if json.id ~= nil then
-        net.missionlist_run(json.id)
-        utils.saveSettings({
-            listStartIndex=json.id
-        })
+        json.result = net.missionlist_run(json.id)
+        if json.result == true then
+            utils.saveSettings({
+                listStartIndex=json.id
+            })
+        end
     else
-    	net.load_mission(json.filename)
+        json.result = net.load_mission(json.filename)
     end
+	utils.sendBotTable(json, json.channel)
 end
 
 function dcsbot.startNextMission(json)
     log.write('DCSServerBot', log.DEBUG, 'Mission: startNextMission()')
-	local result = net.load_next_mission()
-	if (result == false) then
-		result = net.missionlist_run(1)
+	json.result = net.load_next_mission()
+	if json.result == false then
+		json.result = net.missionlist_run(1)
 	end
-	if (result == true) then
+	if json.result == true then
         local mission_list = net.missionlist_get()
 		utils.saveSettings({
 			listStartIndex=mission_list["listStartIndex"]
 		})
 	end
+	utils.sendBotTable(json, json.channel)
 end
 
 function dcsbot.restartMission(json)
     log.write('DCSServerBot', log.DEBUG, 'Mission: restartMission()')
-	net.load_mission(DCS.getMissionFilename())
+	json.result = net.load_mission(DCS.getMissionFilename())
+	utils.sendBotTable(json, json.channel)
 end
 
 function dcsbot.pauseMission(json)
@@ -464,4 +469,43 @@ end
 function dcsbot.unban(json)
     log.write('DCSServerBot', log.DEBUG, 'Admin: unban()')
 	dcsbot.banList[json.ucid] = nil
+end
+
+function dcsbot.makeScreenshot(json)
+    log.write('DCSServerBot', log.DEBUG, 'Mission: makeScreenshot()')
+    net.screenshot_request(json.id)
+end
+
+function dcsbot.getScreenshots(json)
+    log.write('DCSServerBot', log.DEBUG, 'Mission: getScreenshots()')
+    local msg = {
+        command = "getScreenshots",
+        screens = net.get_player_info(json.id, 'screens')
+    }
+    utils.sendBotTable(msg, json.channel)
+end
+
+function dcsbot.deleteScreenshot(json)
+    log.write('DCSServerBot', log.DEBUG, 'Mission: deleteScreenshot()')
+    net.screenshot_del(json.id, json.key)
+end
+
+function dcsbot.setFog(json)
+    log.write('DCSServerBot', log.DEBUG, 'Mission: setFog()')
+	net.dostring_in('mission', 'a_do_script(' .. utils.basicSerialize('dcsbot.setFog(' .. json.visibility .. ',' .. json.thickness .. ',"' .. json.channel .. '")') .. ')')
+end
+
+function dcsbot.getFog(json)
+    log.write('DCSServerBot', log.DEBUG, 'Mission: getFog()')
+	net.dostring_in('mission', 'a_do_script(' .. utils.basicSerialize('dcsbot.getFog("' .. json.channel .. '")') .. ')')
+end
+
+function dcsbot.setFogAnimation(json)
+    log.write('DCSServerBot', log.DEBUG, 'Mission: setFogAnimation()')
+    local animation = '{'
+    for i, value in pairs(json.values) do
+        animation = animation .. '{' .. value[1] .. ',' .. value[2] .. ',' .. value[3] .. '},'
+    end
+    animation = animation .. '}'
+	net.dostring_in('mission', 'a_do_script(' .. utils.basicSerialize('dcsbot.setFogAnimation(' .. animation .. ',"' .. json.channel .. '")') .. ')')
 end

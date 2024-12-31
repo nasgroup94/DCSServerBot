@@ -85,6 +85,14 @@ msgstr "Te gustaría actualizar de la versión {old_version}@{old_branch} a la v
 msgid "Updating DCS World to the newest version, please wait ..."
 msgstr "Actualizando DCS World a la última versión. Por favor, espere ..."
 
+msgid "DCS World could not be updated on node {name} due to missing disk space!"
+msgstr "¡No ha sido posible actualizar DCS World en el nodo {name} debido a falta de espacio en el disco duro!"
+
+msgid "DCS World updated to version {version}@{branch} on node {name}.\n"
+"The updater has requested a **reboot** of the system!"
+msgstr "DCS World actualizado a la versión {version}@{branch} en el nodo {name}.\n"
+"¡El programa de actualización ha requerido el **reinicio** del sistema!"
+
 msgid "DCS updated to version {version}@{branch} on node {name}."
 msgstr "Actualizado DCS a la versión {version}@{branch} en el nodo {name}."
 
@@ -126,6 +134,9 @@ msgstr "El módulo {module} ha sido desinstalado del nodo {node}."
 # /download
 msgid "Download files from your server"
 msgstr "Descarga archivos desde tu servidor"
+
+msgid "File {file} not found in directory {dir}."
+msgstr "El archivo {file} no se ha encontrado en el directorio {dir}."
 
 msgid "File sent as a DM."
 msgstr "Archivo enviado por mensaje privado."

@@ -2,6 +2,7 @@ import aiohttp
 import asyncio
 import atexit
 import certifi
+import ctypes
 import discord
 import json
 import luadata
@@ -10,6 +11,7 @@ import re
 import shutil
 import ssl
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 
 from core import Extension, utils, Server, ServiceRegistry, get_translation, InstallException
@@ -98,8 +100,9 @@ class LotAtc(Extension, FileSystemEventHandler):
             config['srs_server'] = '127.0.0.1'
             srs_port = extension.config.get('port', extension.locals['Server Settings']['SERVER_PORT'])
             config['srs_server_port'] = srs_port
-            srs_transponder_port = extension.config.get('srs_transponder_port',
-                                                        extension.locals['General Settings']['LOTATC_EXPORT_PORT'])
+            srs_transponder_port = extension.config.get('lotatc_export_port',
+                                                        extension.locals['General Settings'].get('LOTATC_EXPORT_PORT',
+                                                                                                 10712))
             if srs_transponder_port:
                 config['srs_use_transponder'] = True
                 config['srs_transponder_port'] = srs_transponder_port
@@ -189,14 +192,13 @@ class LotAtc(Extension, FileSystemEventHandler):
         return True
 
     async def startup(self) -> bool:
-        await super().startup()
         path = os.path.join(self.home, 'stats.json')
         if os.path.exists(path):
             self.process_stats_file(path)
         self.observer = Observer()
         self.observer.schedule(self, path=self.home)
         self.observer.start()
-        return True
+        return await super().startup()
 
     def stop_observer(self):
         if self.observer:
@@ -242,8 +244,13 @@ class LotAtc(Extension, FileSystemEventHandler):
     def do_update(self):
         cwd = self.get_inst_path()
         exe_path = os.path.join(cwd, 'LotAtc_updater.exe')
-        subprocess.run([exe_path, '-c', 'up'], cwd=cwd, shell=False, stderr=subprocess.DEVNULL,
-                       stdout=subprocess.DEVNULL)
+        args = ['-c', 'up']
+        if sys.platform == 'win32':
+            ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", exe_path, ' '.join(args), None, 1)
+        else:
+            subprocess.run([exe_path] + args, cwd=cwd, shell=False, stderr=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL)
 
     async def update_instance(self, force: bool) -> bool:
         major_version, version = self.get_inst_version()
@@ -271,12 +278,12 @@ class LotAtc(Extension, FileSystemEventHandler):
             for name in files:
                 file_x = os.path.join(root, name)
                 file_y = file_x.replace(from_path, self.server.instance.home)
-                if os.path.exists(file_y):
+                if os.path.exists(file_y) and not utils.is_junction(file_y):
                     os.remove(file_y)
             for name in dirs:
                 dir_x = os.path.join(root, name)
                 dir_y = dir_x.replace(from_path, self.server.instance.home)
-                if os.path.exists(dir_y):
+                if os.path.exists(dir_y) and not utils.is_junction(dir_y):
                     try:
                         os.rmdir(dir_y)  # only removes empty directories
                     except OSError:

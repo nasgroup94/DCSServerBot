@@ -1,24 +1,28 @@
 import asyncio
 import discord
+import importlib
 import os
 import psycopg
 import random
 import re
 
-from copy import deepcopy
+from contextlib import suppress
 from core import utils, Plugin, Report, Status, Server, Coalition, Channel, Player, PluginRequiredError, MizFile, \
-    Group, ReportEnv, UploadStatus, command, PlayerType, DataObjectFactory, Member, DEFAULT_TAG, get_translation
+    Group, ReportEnv, command, PlayerType, DataObjectFactory, Member, DEFAULT_TAG, get_translation, \
+    UnsupportedMizFileException
 from datetime import datetime, timezone
 from discord import Interaction, app_commands, SelectOption
 from discord.app_commands import Range
 from discord.ext import commands, tasks
 from discord.ui import Modal, TextInput
+from io import BytesIO
 from pathlib import Path
 from psycopg.rows import dict_row
 from services.bot import DCSServerBot
 from typing import Optional, Union, Literal
 
 from .listener import MissionEventListener
+from .upload import MissionUploadHandler
 from .views import ServerView, PresetView, InfoView
 
 # ruamel YAML support
@@ -32,15 +36,21 @@ async def mizfile_autocomplete(interaction: discord.Interaction, current: str) -
     if not await interaction.command._check_can_run(interaction):
         return []
     try:
-        server: Server = await utils.ServerTransformer().transform(interaction,
-                                                                   utils.get_interaction_param(interaction, 'server'))
+        server: Server = await utils.ServerTransformer().transform(
+            interaction, utils.get_interaction_param(interaction, 'server'))
         if not server:
             return []
+        base_dir = await server.get_missions_dir()
+        ignore = ['.dcssb']
+        if server.locals.get('ignore_dirs'):
+            ignore.extend(server.locals['ignore_dirs'])
         installed_missions = [os.path.expandvars(x) for x in await server.getMissionList()]
+        exp_base, file_list = await server.node.list_directory(base_dir, pattern="*.miz", traverse=True, ignore=ignore)
         choices: list[app_commands.Choice[int]] = [
-            app_commands.Choice(name=os.path.basename(x)[:-4], value=idx)
-            for idx, x in enumerate(await server.listAvailableMissions())
-            if x not in installed_missions and current.casefold() in os.path.basename(x).casefold()
+            app_commands.Choice(name=os.path.relpath(x, exp_base)[:-4], value=os.path.relpath(x, exp_base))
+            for x in file_list
+            if x not in installed_missions and os.path.join(os.path.dirname(x), '.dcssb', os.path.basename(
+                x)) not in installed_missions and current.casefold() in os.path.relpath(x, base_dir).casefold()
         ]
         return choices[:25]
     except Exception as ex:
@@ -55,8 +65,9 @@ async def orig_mission_autocomplete(interaction: discord.Interaction, current: s
                                                                    utils.get_interaction_param(interaction, 'server'))
         if not server:
             return []
-        orig_files = [os.path.basename(x)[:-9] for x in await server.node.list_directory(
-            await server.get_missions_dir(), '*.orig')]
+        _, file_list = await server.node.list_directory(await server.get_missions_dir(), pattern='*.orig',
+                                                        traverse=True)
+        orig_files = [os.path.basename(x)[:-9] for x in file_list]
         choices: list[app_commands.Choice[int]] = [
             app_commands.Choice(name=os.path.basename(x)[:-4], value=idx)
             for idx, x in enumerate(await server.getMissionList())
@@ -103,199 +114,12 @@ class Mission(Plugin):
         self.update_channel_name.cancel()
         await super().cog_unload()
 
-    def _migrate_3_6(self):
-        filename = os.path.join(self.node.config_dir, 'plugins', 'userstats.yaml')
-        if not os.path.exists(filename):
-            return
-        data = yaml.load(Path(filename).read_text(encoding='utf-8'))
-
-        def migrate_instance(cfg: dict) -> dict:
-            ret = {}
-            for name, instance in cfg.items():
-                if 'greeting_message_members' in instance:
-                    if name not in ret:
-                        ret[name] = {}
-                    ret[name]['greeting_message_members'] = instance['greeting_message_members']
-                if 'greeting_message_unmatched' in instance:
-                    if name not in ret:
-                        ret[name] = {}
-                    ret[name]['greeting_message_unmatched'] = instance['greeting_message_unmatched']
-            return ret
-
-        dirty = False
-        if self.node.name in data:
-            for node_name, node in data.items():
-                result = migrate_instance(node)
-                if result:
-                    dirty = True
-                    if node_name not in self.locals:
-                        self.locals[node_name] = result
-                    else:
-                        self.locals[node_name] |= result
-        else:
-            result = migrate_instance(data)
-            if result:
-                dirty = True
-                self.locals |= result
-        if dirty:
-            path = os.path.join(self.node.config_dir, 'plugins', f'{self.plugin_name}.yaml')
-            with open(path, mode='w', encoding='utf-8') as outfile:
-                yaml.dump(self.locals, outfile)
-            self.log.warning(f"New file {path} written, please check for possible errors.")
-
-    def _migrate_3_10(self):
-        def _change_instance(instance: dict):
-            if instance.get('afk_exemptions') and isinstance(instance['afk_exemptions'], list):
-                instance['afk_exemptions'] = {
-                    "ucid": instance['afk_exemptions']
-                }
-    
-        path = os.path.join(self.node.config_dir, 'plugins', self.plugin_name + '.yaml')
-        if not os.path.exists(path):
-            return
-        data = yaml.load(Path(path).read_text(encoding='utf-8'))
-        if self.node.name in data.keys():
-            for name, node in data.items():
-                if name == DEFAULT_TAG:
-                    _change_instance(node)
-                    continue
-                for instance in node.values():
-                    _change_instance(instance)
-        else:
-            for instance in data.values():
-                _change_instance(instance)
-        with open(path, mode='w', encoding='utf-8') as outfile:
-            yaml.dump(data, outfile)
-
-    def _migrate_3_11(self):
-        def _change_instance(instance: dict):
-            instance.pop('greeting_message_members', None)
-            instance.pop('greeting_message_unmatched', None)
-            instance.pop('smooth_pause', None)
-            instance.pop('afk_exemptions', None)
-            instance.pop('usage_alarm', None)
-            # remove message_server_full if Slotblocking is not used
-            if 'slotblocking' not in self.node.plugins:
-                instance.pop('message_server_full', None)
-
-        # first of all, reorganise the messages in servers.yaml
-        server_config = os.path.join(self.node.config_dir, 'servers.yaml')
-        server_data = yaml.load(Path(server_config).read_text(encoding='utf-8'))
-        # make sure we have a default tag
-        default = server_data.get(DEFAULT_TAG)
-        if not default:
-            default = server_data[DEFAULT_TAG] = {
-                "messages": {
-                    'greeting_message_members': self.locals.get(DEFAULT_TAG, {}).get(
-                        'greeting_message_members', '{player.name}, welcome back to {server.name}!'),
-                    'greeting_message_unmatched': self.locals.get(DEFAULT_TAG, {}).get(
-                        'greeting_message_unmatched', '{player.name}, please use /linkme in our Discord, '
-                                                      'if you want to see your user stats!'),
-                    'message_player_username': self.node.config.get('messages', {}).get(
-                        'player_username', 'Your player name contains invalid characters. '
-                                           'Please change your name to join our server.'),
-                    'message_player_default_username': self.node.config.get('messages', {}).get(
-                        'player_default_username', 'Please change your default player name at the top right of the '
-                                                   'multiplayer selection list to an individual one!'),
-                    'message_ban': 'You are banned from this server. Reason: {}',
-                    'message_reserved': 'This server is locked for specific users.\n'
-                                        'Please contact a server admin.',
-                    'message_no_voice': 'You need to be in voice channel "{}" to use this server!'
-                }
-            }
-        else:
-            default['messages'] = {
-                'greeting_message_members': self.locals.get(DEFAULT_TAG, {}).get(
-                    'greeting_message_members', '{player.name}, welcome back to {server.name}!'),
-                'greeting_message_unmatched': self.locals.get(DEFAULT_TAG, {}).get(
-                    'greeting_message_unmatched', '{player.name}, please use /linkme in our Discord, '
-                                                  'if you want to see your user stats!'),
-                'message_player_username': self.node.config.get('messages', {}).get(
-                    'player_username', 'Your player name contains invalid characters. '
-                                       'Please change your name to join our server.'),
-                'message_player_default_username': self.node.config.get('messages', {}).get(
-                    'player_default_username', 'Please change your default player name at the top right of the '
-                                               'multiplayer selection list to an individual one!'),
-                'message_ban': server_data[DEFAULT_TAG].pop('message_ban', 'You are banned from this server. Reason: {}'),
-                'message_reserved': server_data[DEFAULT_TAG].pop('message_reserved',
-                                                                 'This server is locked for specific users.\n'
-                                                                 'Please contact a server admin.'),
-                'message_no_voice': server_data[DEFAULT_TAG].pop('message_no_voice',
-                                                'You need to be in voice channel "{}" to use this server!'),
-            }
-        if 'smooth_pause' in self.locals.get(DEFAULT_TAG, {}):
-            default['smooth_pause'] = self.locals[DEFAULT_TAG].pop('smooth_pause')
-        if self.locals.get(DEFAULT_TAG, {}).get('usage_alarm'):
-            default['usage_alarm'] = self.locals[DEFAULT_TAG].pop('usage_alarm')
-        default['slot_spamming'] = {
-            "message": default.pop('message_slot_spamming', 'You have been kicked for slot spamming!'),
-            "check_time": 5,
-            "slot_changes": 5
-        }
-        for name, section in server_data.items():
-            if name == DEFAULT_TAG:
-                continue
-            if 'messages' not in section:
-                section['messages'] = {
-                    'greeting_message_members': default['messages']['greeting_message_members'],
-                    'greeting_message_unmatched': default['messages']['greeting_message_unmatched'],
-                    'message_player_username': default['messages']['message_player_username'],
-                    'message_player_default_username': default['messages']['message_player_default_username'],
-                    'message_ban': section.pop('message_ban', default['messages']['message_ban']),
-                    'message_reserved': section.pop('message_reserved', default['messages']['message_reserved']),
-                    'message_no_voice': section.pop('message_no_voice', default['messages']['message_no_voice']),
-                }
-            if 'afk_time' in section:
-                section['afk'] = {
-                    'afk_time': section.pop('afk_time'),
-                    'message': section.pop('message_afk', default.get(
-                        'message_afk', '{player.name}, you have been kicked for being AFK for more than {time}.'))
-                }
-                if self.locals.get(DEFAULT_TAG, {}).get('afk_exemptions'):
-                    section['afk']['exemptions'] = deepcopy(self.locals[DEFAULT_TAG]['afk_exemptions'])
-        # remove defaults from the server sections
-        for element in default.keys():
-            for name, section in server_data.items():
-                if name == DEFAULT_TAG:
-                    continue
-                elif section.get(element) == default[element]:
-                    section.pop(element, None)
-        default.pop('message_afk', None)
-        # rewrite servers.yaml
-        with open(server_config, mode='w', encoding='utf-8') as outfile:
-            yaml.dump(server_data, outfile)
-        # cleanup
-        # remove messages from main.yaml
-        config = os.path.join(self.node.config_dir, 'main.yaml')
-        data = yaml.load(Path(config).read_text(encoding='utf-8'))
-        if data.pop('messages', None):
-            with open(config, mode='w', encoding='utf-8') as outfile:
-                yaml.dump(data, outfile)
-        # remove unnecessary stuff from own config
-        path = os.path.join(self.node.config_dir, 'plugins', self.plugin_name + '.yaml')
-        if not os.path.exists(path):
-            return
-        data = yaml.load(Path(path).read_text(encoding='utf-8'))
-        if self.node.name in data.keys():
-            for name, node in data.items():
-                if name == DEFAULT_TAG:
-                    _change_instance(node)
-                    continue
-                for instance in node.values():
-                    _change_instance(instance)
-        else:
-            for instance in data.values():
-                _change_instance(instance)
-        with open(path, mode='w', encoding='utf-8') as outfile:
-            yaml.dump(data, outfile)
-
     async def migrate(self, new_version: str, conn: Optional[psycopg.AsyncConnection] = None) -> None:
-        if new_version == '3.6':
-            self._migrate_3_6()
-        elif new_version == '3.10':
-            self._migrate_3_10()
-        elif new_version == '3.11':
-            self._migrate_3_11()
+        function_name = f"migrate_{new_version.replace('.', '_')}"
+        migrate_module = importlib.import_module('.migrate', package=__package__)
+        migrate_function = getattr(migrate_module, function_name, None)
+        if callable(migrate_function):
+            await migrate_function(self)
 
     async def rename(self, conn: psycopg.AsyncConnection, old_name: str, new_name: str):
         await conn.execute('UPDATE missions SET server_name = %s WHERE server_name = %s', (new_name, old_name))
@@ -412,7 +236,7 @@ class Mission(Plugin):
     async def restart(self, interaction: discord.Interaction,
                       server: app_commands.Transform[Server, utils.ServerTransformer(
                           status=[Status.RUNNING, Status.PAUSED, Status.STOPPED])],
-                      delay: Optional[int] = 120, reason: Optional[str] = None, run_extensions: Optional[bool] = False):
+                      delay: Optional[int] = 120, reason: Optional[str] = None, run_extensions: Optional[bool] = True):
         await self._restart(interaction, server, delay, reason, run_extensions, rotate=False)
 
     @mission.command(description=_('Rotates to the next mission\n'))
@@ -421,13 +245,13 @@ class Mission(Plugin):
     async def rotate(self, interaction: discord.Interaction,
                      server: app_commands.Transform[Server, utils.ServerTransformer(
                           status=[Status.RUNNING, Status.PAUSED, Status.STOPPED])],
-                     delay: Optional[int] = 120, reason: Optional[str] = None, run_extensions: Optional[bool] = False):
+                     delay: Optional[int] = 120, reason: Optional[str] = None, run_extensions: Optional[bool] = True):
         await self._restart(interaction, server, delay, reason, run_extensions, rotate=True)
 
     async def _restart(self, interaction: discord.Interaction,
                        server: app_commands.Transform[Server, utils.ServerTransformer(
                           status=[Status.RUNNING, Status.PAUSED, Status.STOPPED])],
-                       delay: Optional[int] = 120, reason: Optional[str] = None, run_extensions: Optional[bool] = False,
+                       delay: Optional[int] = 120, reason: Optional[str] = None, run_extensions: Optional[bool] = True,
                        rotate: Optional[bool] = False):
         what = "restart" if not rotate else "rotate"
         actions = {
@@ -500,7 +324,7 @@ class Mission(Plugin):
                     command=(await utils.get_command(self.bot, group='mission', name='info')).mention
                 ), ephemeral=ephemeral)
 
-    async def _load(self, interaction: discord.Interaction, server: Server, mission_id: int,
+    async def _load(self, interaction: discord.Interaction, server: Server, mission: Optional[Union[int, str]] = None,
                     run_extensions: Optional[bool] = False):
         ephemeral = utils.get_ephemeral(interaction)
         if server.status not in [Status.RUNNING, Status.PAUSED, Status.STOPPED]:
@@ -530,7 +354,18 @@ class Mission(Plugin):
         if not interaction.response.is_done():
             # noinspection PyUnresolvedReferences
             await interaction.response.defer(ephemeral=ephemeral)
-        mission = (await server.getMissionList())[mission_id]
+        if isinstance(mission, int):
+            mission_id = mission
+            mission = (await server.getMissionList())[mission_id]
+        elif isinstance(mission, str):
+            try:
+                mission = os.path.join(await server.get_missions_dir(), mission)
+                mission_id = (await server.getMissionList()).index(mission)
+            except ValueError:
+                mission_id = None
+        else:
+            await interaction.followup.send(_('You need to provide a mission!'), ephemeral=True)
+            return
         if server.current_mission and mission == server.current_mission.filename:
             if result == 'later':
                 server.on_empty = {"command": "restart", "user": interaction.user}
@@ -541,7 +376,7 @@ class Mission(Plugin):
                 await interaction.followup.send(_('Mission {}.').format(_('restarted')), ephemeral=ephemeral)
         else:
             name = os.path.basename(mission[:-4])
-            if result == 'later':
+            if mission_id and result == 'later':
                 # make sure, we load that mission, independently on what happens to the server
                 await server.setStartIndex(mission_id + 1)
                 server.on_empty = {"command": "load", "id": mission_id + 1, "user": interaction.user}
@@ -549,50 +384,57 @@ class Mission(Plugin):
                     _('Mission {} will be loaded when server is empty or on the next restart.').format(name),
                     ephemeral=ephemeral)
             else:
-                tmp = await interaction.followup.send(_('Loading mission {} ...').format(utils.escape_string(name)),
+                msg = await interaction.followup.send(_('Loading mission {} ...').format(utils.escape_string(name)),
                                                       ephemeral=ephemeral)
                 try:
-                    await server.loadMission(mission_id + 1, modify_mission=run_extensions)
-                    await self.bot.audit(f"loaded mission {utils.escape_string(name)}", server=server,
-                                         user=interaction.user)
-                    await interaction.followup.send(_('Mission {} loaded.').format(name), ephemeral=ephemeral)
+                    if not await server.loadMission(mission, modify_mission=run_extensions):
+                        await msg.edit(content=_('Mission {} NOT loaded. '
+                                                 'Check that you have installed the pre-requisites (terrains, mods).'
+                                                 ).format(name))
+                    else:
+                        message = _('Mission {} loaded.').format(name)
+                        if not mission_id:
+                            message += _('\nThis mission is NOT in the mission list and will not auto-load on server '
+                                         'or mission restarts.\n'
+                                         'If you want it to auto-load, use {}').format(
+                                (await utils.get_command(self.bot, group='mission', name='add')).mention)
+                        await msg.edit(content=message)
+                        await self.bot.audit(f"loaded mission {utils.escape_string(name)}", server=server,
+                                             user=interaction.user)
                 except (TimeoutError, asyncio.TimeoutError):
-                    await interaction.followup.send(_('Timeout while loading mission {}!').format(name),
-                                                    ephemeral=ephemeral)
-                finally:
-                    await tmp.delete()
+                    await msg.edit(content=_('Timeout while loading mission {}!').format(name))
+                except UnsupportedMizFileException as ex:
+                    await msg.edit(content=ex)
 
     @mission.command(description=_('Loads a mission\n'))
     @app_commands.guild_only()
     @utils.app_has_role('DCS Admin')
     @app_commands.rename(mission_id="mission")
     @app_commands.autocomplete(mission_id=utils.mission_autocomplete)
+    @app_commands.autocomplete(alt_mission=mizfile_autocomplete)
     async def load(self, interaction: discord.Interaction,
                    server: app_commands.Transform[Server, utils.ServerTransformer(
                        status=[Status.STOPPED, Status.RUNNING, Status.PAUSED])],
-                   mission_id: int, run_extensions: Optional[bool] = False):
-        await self._load(interaction, server, mission_id, run_extensions)
+                   mission_id: Optional[int] = None, alt_mission: Optional[str] = None,
+                   run_extensions: Optional[bool] = True):
+        await self._load(interaction, server, mission_id if mission_id is not None else alt_mission, run_extensions)
 
     @mission.command(description=_('Adds a mission to the list\n'))
     @app_commands.guild_only()
     @utils.app_has_role('DCS Admin')
-    @app_commands.rename(idx=_("path"))
-    @app_commands.autocomplete(idx=mizfile_autocomplete)
+    @app_commands.autocomplete(path=mizfile_autocomplete)
     async def add(self, interaction: discord.Interaction,
-                  server: app_commands.Transform[Server, utils.ServerTransformer], idx: int,
+                  server: app_commands.Transform[Server, utils.ServerTransformer], path: str,
                   autostart: Optional[bool] = False):
         ephemeral = utils.get_ephemeral(interaction)
         # noinspection PyUnresolvedReferences
         await interaction.response.defer(ephemeral=ephemeral)
-        all_missions = await server.listAvailableMissions()
-        if idx >= len(all_missions):
-            await interaction.followup.send(_('No mission found.'), ephemeral=True)
-            return
-        path = all_missions[idx]
-        await server.addMission(path, autostart=autostart)
+
+        path = os.path.normpath(os.path.join(await server.get_missions_dir(), path))
+        new_mission_list = await server.addMission(path, autostart=autostart)
         name = os.path.basename(path)
         await interaction.followup.send(_('Mission "{}" added.').format(utils.escape_string(name)), ephemeral=ephemeral)
-        mission_id = (await server.getMissionList()).index(path)
+        mission_id = new_mission_list.index(path)
         if server.status not in [Status.RUNNING, Status.PAUSED, Status.STOPPED] or \
                 not await utils.yn_question(interaction, _('Do you want to load this mission?'),
                                             ephemeral=ephemeral):
@@ -628,14 +470,25 @@ class Mission(Plugin):
                 await server.deleteMission(mission_id + 1)
                 await interaction.followup.send(_('Mission "{}" removed from list.').format(os.path.basename(name)),
                                                 ephemeral=ephemeral)
-                if await utils.yn_question(interaction, _('Delete "{}" also from disk?').format(name),
+                if await utils.yn_question(interaction,
+                                           _('Delete "{}" also from disk?').format(os.path.basename(filename)),
                                            ephemeral=ephemeral):
                     try:
                         await server.node.remove_file(filename)
-                        await interaction.followup.send(_('Mission "{}" deleted.').format(name), ephemeral=ephemeral)
-                    except FileNotFoundError:
-                        await interaction.followup.send(_('Mission "{}" was already deleted.').format(name),
+                        if '.dcssb' in filename:
+                            origname = filename.replace(os.path.sep + '.dcssb', '')
+                            await server.node.remove_file(origname)
+                        else:
+                            origname = filename
+                            secondary = os.path.join(os.path.dirname(filename), '.dcssb', os.path.basename(filename))
+                            await server.node.remove_file(secondary)
+                        await server.node.remove_file(origname + '.orig')
+                        await interaction.followup.send(_('Mission "{}" deleted.').format(os.path.basename(filename)),
                                                         ephemeral=ephemeral)
+                    except FileNotFoundError:
+                        await interaction.followup.send(
+                            _('Mission "{}" was already deleted.').format(os.path.basename(filename)),
+                            ephemeral=ephemeral)
                 await self.bot.audit(_("deleted mission {}").format(name), user=interaction.user)
             except (TimeoutError, asyncio.TimeoutError):
                 await interaction.followup.send(_("Timeout while deleting mission.\n"
@@ -690,8 +543,10 @@ class Mission(Plugin):
     async def modify(self, interaction: discord.Interaction,
                      server: app_commands.Transform[Server, utils.ServerTransformer(
                          status=[Status.RUNNING, Status.PAUSED, Status.STOPPED, Status.SHUTDOWN])],
-                     presets_file: Optional[str] = 'config/presets.yaml'):
+                     presets_file: Optional[str] = None):
         ephemeral = utils.get_ephemeral(interaction)
+        if presets_file is None:
+            presets_file = os.path.join(self.node.config_dir, 'presets.yaml')
         try:
             with open(presets_file, mode='r', encoding='utf-8') as infile:
                 presets = yaml.load(infile)
@@ -714,6 +569,9 @@ class Mission(Plugin):
             return
         if len(options) > 25:
             self.log.warning("You have more than 25 presets created, you can only choose from 25!")
+        elif not options:
+            # noinspection PyUnresolvedReferences
+            await interaction.response.send_message(_("There are no presets to chose from."), ephemeral=True)
 
         result = None
         if server.status in [Status.PAUSED, Status.RUNNING]:
@@ -748,7 +606,7 @@ class Mission(Plugin):
         else:
             startup = False
             msg = await interaction.followup.send(_('Changing mission ...'), ephemeral=ephemeral)
-            if not server.node.config.get('mission_rewrite', True) and server.status != Status.STOPPED:
+            if not server.locals.get('mission_rewrite', True) and server.status != Status.STOPPED:
                 await server.stop()
                 startup = True
             filename = await server.get_current_mission_file()
@@ -787,7 +645,7 @@ class Mission(Plugin):
             with open(config_file, mode='r', encoding='utf-8') as infile:
                 presets = yaml.load(infile)
         else:
-            presets = dict()
+            presets = {}
         if name in presets and \
                 not await utils.yn_question(interaction,
                                             _('Do you want to overwrite the existing preset "{}"?').format(name),
@@ -846,6 +704,111 @@ class Mission(Plugin):
             await server.replaceMission(mission_id + 1, new_file)
         await interaction.followup.send(_("Mission {} has been rolled back.").format(miz_file[:-4]),
                                         ephemeral=ephemeral)
+
+    @mission.command(description=_('Sets fog in the running mission'))
+    @app_commands.guild_only()
+    @app_commands.describe(thickness=_("Thickness of the fog [100-5000]m, to disable, set 0."))
+    @app_commands.describe(visibility=_("Visibility of the fog [100-100000]m, to disable, set 0."))
+    @utils.app_has_role('DCS Admin')
+    @utils.app_has_dcs_version("2.9.10")
+    async def fog(self, interaction: discord.Interaction,
+                  server: app_commands.Transform[Server, utils.ServerTransformer(
+                      status=[Status.RUNNING, Status.PAUSED])],
+                  thickness: Optional[app_commands.Range[int, 0, 5000]] = None,
+                  visibility: Optional[app_commands.Range[int, 0, 100000]] = None):
+        ephemeral = utils.get_ephemeral(interaction)
+        # noinspection PyUnresolvedReferences
+        await interaction.response.defer(ephemeral=ephemeral)
+        if thickness is None and visibility is None:
+            ret = await server.send_to_dcs_sync({
+                "command": "getFog"
+            })
+        else:
+            if thickness and thickness < 100:
+                await interaction.followup.send(_("Thickness has to be in the range 100-5000"))
+                return
+            if visibility and visibility < 100:
+                await interaction.followup.send(_("Visibility has to be in the range 100-100000"))
+                return
+            ret = await server.send_to_dcs_sync({
+                "command": "setFog",
+                "thickness": thickness if thickness is not None else -1,
+                "visibility": visibility if visibility is not None else -1
+            })
+        await interaction.followup.send(_("Current Fog Settings:\n- Thickness: {thickness:.2f}m\n- Visibility:\t{visibility:.2f}m").format(
+            thickness=ret['thickness'], visibility=ret['visibility']), ephemeral=ephemeral)
+
+    @mission.command(description=_('Runs a fog animation'))
+    @app_commands.guild_only()
+    @utils.app_has_role('DCS Admin')
+    @app_commands.autocomplete(presets_file=presets_autocomplete)
+    @utils.app_has_dcs_version("2.9.10")
+    async def fog_animation(self, interaction: discord.Interaction,
+                            server: app_commands.Transform[Server, utils.ServerTransformer(
+                                status=[Status.RUNNING, Status.PAUSED])],
+                            presets_file: Optional[str] = None):
+        ephemeral = utils.get_ephemeral(interaction)
+        if presets_file is None:
+            presets_file = os.path.join(self.node.config_dir, 'presets.yaml')
+        try:
+            with open(presets_file, mode='r', encoding='utf-8') as infile:
+                presets = yaml.load(infile)
+        except FileNotFoundError:
+            # noinspection PyUnresolvedReferences
+            await interaction.response.send_message(
+                _('No presets available, please configure them in {}.').format(presets_file), ephemeral=True)
+            return
+        try:
+            options = [
+                discord.SelectOption(label=k)
+                for k, v in presets.items()
+                if not v.get('hidden', False) and v.get('fog') and
+                   (v['fog'].get('mode', None) == 'manual' or all(isinstance(y, int) for y in v['fog'].keys()))
+            ]
+        except AttributeError:
+            # noinspection PyUnresolvedReferences
+            await interaction.response.send_message(
+                _("There is an error in your {}. Please check the file structure.").format(presets_file),
+                ephemeral=True)
+            return
+        if len(options) > 25:
+            self.log.warning("You have more than 25 presets created, you can only choose from 25!")
+        elif not options:
+            # noinspection PyUnresolvedReferences
+            await interaction.response.send_message(_("There is no manual fog preset in your {}").format(presets_file),
+                                                    ephemeral=True)
+            return
+
+        # select a preset
+        view = PresetView(options[:25], multi=False)
+        # noinspection PyUnresolvedReferences
+        if interaction.response.is_done():
+            msg = await interaction.followup.send(view=view, ephemeral=ephemeral)
+        else:
+            # noinspection PyUnresolvedReferences
+            await interaction.response.send_message(view=view, ephemeral=ephemeral)
+            msg = await interaction.original_response()
+        try:
+            if await view.wait() or view.result is None:
+                return
+        finally:
+            try:
+                await msg.delete()
+            except discord.NotFound:
+                pass
+
+        fog = utils.get_preset(self.node, view.result[0])['fog']
+        fog.pop('mode', None)
+        await server.send_to_dcs_sync(
+            {
+                'command': 'setFogAnimation',
+                'values': [
+                    (key, value["visibility"], value["thickness"])
+                    for key, value in fog.items()
+                ]
+            })
+        message = _('The following preset was applied: {}.').format(view.result[0])
+        await interaction.followup.send(message, ephemeral=ephemeral)
 
     # New command group "/player"
     player = Group(name="player", description=_("Commands to manage DCS players"))
@@ -1049,6 +1012,55 @@ class Mission(Plugin):
         await player.sendChatMessage(message, interaction.user.display_name)
         # noinspection PyUnresolvedReferences
         await interaction.response.send_message(_('Message sent.'), ephemeral=utils.get_ephemeral(interaction))
+
+    @player.command(description=_('Take a screenshot'))
+    @app_commands.guild_only()
+    @utils.app_has_role('DCS Admin')
+    async def screenshot(self, interaction: discord.Interaction,
+                   server: app_commands.Transform[Server, utils.ServerTransformer(status=[Status.RUNNING])],
+                   player: app_commands.Transform[Player, utils.PlayerTransformer(active=True)]) -> None:
+        if not player:
+            # noinspection PyUnresolvedReferences
+            await interaction.response.send_message(_("Player not found."), ephemeral=True)
+            return
+        if not server.settings.get('advanced', {}).get('server_can_screenshot'):
+            # noinspection PyUnresolvedReferences
+            await interaction.response.send_message(_("Server can not take screenshots."), ephemeral=True)
+            return
+        ephemeral = utils.get_ephemeral(interaction)
+        # noinspection PyUnresolvedReferences
+        await interaction.response.defer(ephemeral=ephemeral)
+        msg = await interaction.followup.send(_("Requesting screenshot ..."), ephemeral=ephemeral)
+        try:
+            old_screens = await player.getScreenshots()
+            await player.makeScreenshot()
+            timeout = 30 if server.node.locals.get('slow_system', False) else 10
+            for i in range(1, timeout):
+                await asyncio.sleep(1)
+                new_screens = await player.getScreenshots()
+                if len(new_screens) > len(old_screens):
+                    break
+            else:
+                await msg.edit(content=_("Timeout while waiting for screenshot!"))
+                return
+        except (TimeoutError, asyncio.TimeoutError):
+            await msg.edit(content=_("Timeout while waiting for screenshot!"))
+            return
+        key = new_screens[-1]
+        try:
+            image_url = f"http://127.0.0.1:{server.instance.webgui_port}{key}"
+            image_data = await server.node.read_file(image_url)
+            file = discord.File(BytesIO(image_data), filename="screenshot.png")
+            await msg.delete()
+            embed = discord.Embed(color=discord.Color.blue(),
+                                  title=_("Screenshot of Player {}").format(player.display_name))
+            embed.set_image(url="attachment://screenshot.png")
+            embed.add_field(name=_("Server"), value=server.display_name, inline=False)
+            embed.add_field(name=_("Time"), value=f"<t:{int(datetime.now().timestamp())}>", inline=False)
+            embed.add_field(name=_("Taken by"), value=interaction.user.display_name, inline=False)
+            await interaction.followup.send(embed=embed, file=file, ephemeral=ephemeral)
+        finally:
+            await player.deleteScreenshot(key)
 
     watch = Group(name="watch", description="Commands to manage the watchlist")
 
@@ -1619,24 +1631,33 @@ class Mission(Plugin):
                 if not channel:
                     channel = await self.bot.fetch_channel(server.channels[Channel.STATUS])
                 # name changes of the status channel will only happen with the correct permission
-                if channel.permissions_for(self.bot.member).manage_channels:
-                    name = channel.name
-                    # if the server owner leaves, the server is shut down
-                    if server.status in [Status.STOPPED, Status.SHUTDOWN, Status.LOADING]:
-                        if name.find('［') == -1:
-                            name = name + '［-］'
-                        else:
-                            name = re.sub('［.*］', f'［-］', name)
+                if not channel.permissions_for(self.bot.member).manage_channels:
+                    return
+                if channel.type == discord.ChannelType.forum:
+                    continue
+# TODO: Alternative implementation, if Discord decides to no longer use system messages for a thread rename
+#                    for thread in channel.threads:
+#                        if thread.name.startswith(server_name):
+#                            channel = thread
+#                            break
+#                    else:
+#                        continue
+                name = channel.name
+                if server.status in [Status.STOPPED, Status.SHUTDOWN, Status.LOADING, Status.SHUTTING_DOWN]:
+                    if name.find('［') == -1:
+                        name = name + '［-］'
                     else:
-                        players = server.get_active_players()
-                        current = len(players) + 1
-                        max_players = server.settings.get('maxPlayers') or 0
-                        if name.find('［') == -1:
-                            name = name + f'［{current}／{max_players}］'
-                        else:
-                            name = re.sub('［.*］', f'［{current}／{max_players}］', name)
-                    if name != channel.name:
-                        await channel.edit(name=name)
+                        name = re.sub('［.*］', f'［-］', name)
+                else:
+                    players = server.get_active_players()
+                    current = len(players) + 1
+                    max_players = server.settings.get('maxPlayers') or 0
+                    if name.find('［') == -1:
+                        name = name + f'［{current}／{max_players}］'
+                    else:
+                        name = re.sub('［.*］', f'［{current}／{max_players}］', name)
+                if name != channel.name:
+                    await channel.edit(name=name)
             except Exception as ex:
                 self.log.debug(f"Exception in update_channel_name() for server {server_name}", exc_info=str(ex))
 
@@ -1707,113 +1728,32 @@ class Mission(Plugin):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # ignore bot messages or messages that do not contain miz attachments
-        if message.author.bot or not message.attachments or not message.attachments[0].filename.endswith('.miz'):
-            return
-        # read the default config, if there is any
+        pattern = ['.miz']
         config = self.get_config().get('uploads', {})
+        if not MissionUploadHandler.is_valid(message, pattern, config.get('discord', self.bot.roles['DCS Admin'])):
+            return
         # check, if upload is enabled
         if not config.get('enabled', True):
             self.log.debug("Mission upload is disabled!")
             return
-        # check if the user has the correct role to upload, defaults to DCS Admin
-        if not utils.check_roles(config.get('discord', self.bot.roles['DCS Admin']), message.author):
-            self.log.debug(f"User {message.author.name} does not have the permission to upload missions!")
-            return
-        # check if the upload happens in the servers admin channel (if provided)
-        server: Server = self.bot.get_server(message, admin_only=True)
-        ctx = await self.bot.get_context(message)
-        if not server:
-            # check if there is a central admin channel configured
-            if self.bot.locals.get('admin_channel', 0) == message.channel.id:
-                try:
-                    server = await utils.server_selection(
-                        self.bus, ctx, title=_("To which server do you want to upload this mission to?"))
-                    if not server:
-                        await ctx.send(_('Upload aborted.'))
-                        return
-                except Exception as ex:
-                    self.log.exception(ex)
-                    return
-            else:
-                return
-        att = message.attachments[0]
-        try:
-            self.log.debug(f"Uploading mission {att.filename} to {server.name} ...")
-            rc = await server.uploadMission(att.filename, att.url)
-            if rc == UploadStatus.FILE_IN_USE:
-                self.log.debug("Mission file is in use, asking to stop server.")
-                if not await utils.yn_question(ctx, _('A mission is currently active.\n'
-                                                      'Do you want me to stop the DCS-server to replace it?')):
-                    await message.channel.send(_('Upload aborted.'))
-                    return
-            elif rc == UploadStatus.FILE_EXISTS:
-                self.log.debug("Mission file exists, asking for overwrite.")
-                if not await utils.yn_question(ctx, _('File exists. Do you want to overwrite it?')):
-                    await message.channel.send(_('Upload aborted.'))
-                    return
-            if rc != UploadStatus.OK:
-                self.log.debug(f"Error while uploading: {rc}")
-                if (await server.uploadMission(att.filename, att.url, force=True)) != UploadStatus.OK:
-                    await message.channel.send(_('Error while uploading: {}').format(rc.name))
-                    return
-            self.log.debug("Mission uploaded successfully.")
-            name = utils.escape_string(os.path.basename(att.filename)[:-4])
-            try:
-                if server.locals.get('autoscan', False):
-                    self.log.debug("Autoscan enabled, waiting for mission to be auto-added.")
-                    await message.channel.send(
-                        _('Mission "{mission}" uploaded to server {server}.\n'
-                          'As you have "autoscan" enabled, it might take some seconds to appear in your mission list.'
-                          ).format(mission=name, server=server.display_name))
-                    return
-                # get the real filename after the upload
-                filename = next((file for file in await server.getMissionList()
-                                 if os.path.basename(file) == os.path.basename(att.filename)), None)
-                if not filename:
-                    msg = 'Error while uploading: File not found in severSettings.lua!'
-                    self.log.error(msg)
-                    await message.channel.send(_(msg))
-                    return
-                msg = _('Mission "{mission}" uploaded to server {server}').format(mission=name,
-                                                                                  server=server.display_name)
-                if server.locals.get('autoadd', True):
-                    self.log.debug("Mission added to the mission list.")
-                    msg += _(' and added')
-                    await message.channel.send(msg)
-                else:
-                    await message.channel.send(msg)
-                    return
-            finally:
-                await self.bot.audit(f'uploaded mission "{name}"', server=server, user=message.author)
 
-            if (server.status != Status.SHUTDOWN and server.current_mission and
-                    server.current_mission.filename != filename and
-                    await utils.yn_question(ctx, _('Do you want to load this mission?'))):
-                extensions = [
-                    x.name for x in server.extensions.values()
-                    if getattr(x, 'beforeMissionLoad').__module__ != 'core.extension'
-                ]
-                if len(extensions):
-                    modify = await utils.yn_question(ctx, _("Do you want to apply extensions before mission start?"))
-                else:
-                    modify = False
-                tmp = await message.channel.send(_('Loading mission {} ...').format(name))
-                try:
-                    await server.loadMission(filename, modify_mission=modify)
-                except (TimeoutError, asyncio.TimeoutError):
-                    await tmp.delete()
-                    await message.channel.send(_("Timeout while trying to load the mission."))
-                    await self.bot.audit(f"Timeout while trying to load mission {name}",
-                                         server=server)
-                    return
-                await self.bot.audit(f"loaded mission {name}", server=server, user=message.author)
-                await tmp.delete()
-                await message.channel.send(_('Mission {} loaded.').format(name))
+        # check, if we are in the correct channel
+        server = await MissionUploadHandler.get_server(message)
+        if not server:
+            return
+
+        try:
+            handler = MissionUploadHandler(plugin=self, server=server, message=message, pattern=pattern)
+            base_dir = await handler.server.get_missions_dir()
+            ignore = ['.dcssb', 'Saves', 'Scripts']
+            if server.locals.get('ignore_dirs'):
+                ignore.extend(server.locals['ignore_dirs'])
+            await handler.upload(base_dir, ignore_list=ignore)
         except Exception as ex:
             self.log.exception(ex)
         finally:
-            await message.delete()
+            with suppress(discord.errors.NotFound):
+                await message.delete()
 
     @commands.Cog.listener()
     async def on_member_ban(self, _: discord.Guild, member: discord.Member):

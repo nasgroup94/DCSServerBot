@@ -1,5 +1,9 @@
 from __future__ import annotations
+
+import asyncio
+
 from core import Server, Status, utils, Coalition
+from core.utils.helper import async_cache
 from core.data.node import UploadStatus
 from dataclasses import dataclass, field
 from typing import Optional, Union, Any
@@ -11,6 +15,18 @@ __all__ = ["ServerProxy"]
 class ServerProxy(Server):
     _extensions: Optional[list[dict]] = field(compare=False, default=None)
 
+    def __post_init__(self):
+        super().__post_init__()
+        self.is_remote = True
+
+    def __eq__(self, other):
+        if isinstance(other, ServerProxy):
+            return self.name == other.name
+        return False
+
+    def __hash__(self):
+        return hash(self.name)
+
     async def reload(self):
         timeout = 60 if not self.node.slow_system else 120
         await self.bus.send_to_node_sync({
@@ -20,10 +36,7 @@ class ServerProxy(Server):
             "server_name": self.name
         }, node=self.node.name, timeout=timeout)
 
-    @property
-    def is_remote(self) -> bool:
-        return True
-
+    @async_cache
     async def get_missions_dir(self) -> str:
         timeout = 60 if not self.node.slow_system else 120
         data = await self.bus.send_to_node_sync({
@@ -84,29 +97,8 @@ class ServerProxy(Server):
             "server_name": self.name
         }, timeout=timeout, node=self.node.name)
 
-    async def startup_extensions(self) -> None:
-        timeout = 180 if not self.node.slow_system else 300
-        await self.bus.send_to_node_sync({
-            "command": "rpc",
-            "object": "Server",
-            "method": "startup_extensions",
-            "server_name": self.name
-        }, node=self.node.name, timeout=timeout)
-        self._extensions = None
-
-    async def shutdown_extensions(self) -> None:
-        timeout = 180 if not self.node.slow_system else 300
-        await self.bus.send_to_node_sync({
-            "command": "rpc",
-            "object": "Server",
-            "method": "shutdown_extensions",
-            "server_name": self.name
-        }, node=self.node.name, timeout=timeout)
-        self._extensions = None
-
     async def shutdown(self, force: bool = False) -> None:
         timeout = 180 if not self.node.slow_system else 300
-        await super().shutdown(force)
         if self.status != Status.SHUTDOWN:
             await self.bus.send_to_node_sync({
                 "command": "rpc",
@@ -138,7 +130,7 @@ class ServerProxy(Server):
             "server_name": self.name
         }, node=self.node.name, timeout=timeout)
 
-    async def uploadMission(self, filename: str, url: str, force: bool = False) -> UploadStatus:
+    async def uploadMission(self, filename: str, url: str, force: bool = False, missions_dir: str = None) -> UploadStatus:
         timeout = 120 if not self.node.slow_system else 240
         data = await self.bus.send_to_node_sync({
             "command": "rpc",
@@ -147,31 +139,12 @@ class ServerProxy(Server):
             "params": {
                 "filename": filename,
                 "url": url,
-                "force": force
+                "force": force,
+                "missions_dir": missions_dir
             },
             "server_name": self.name
         }, timeout=timeout, node=self.node.name)
         return UploadStatus(data["return"])
-
-    async def listAvailableMissions(self) -> list[str]:
-        timeout = 60 if not self.node.slow_system else 120
-        data = await self.bus.send_to_node_sync({
-            "command": "rpc",
-            "object": "Server",
-            "method": "listAvailableMissions",
-            "server_name": self.name
-        }, timeout=timeout, node=self.node.name)
-        return data['return']
-
-    async def getMissionList(self) -> list[str]:
-        timeout = 60 if not self.node.slow_system else 120
-        data = await self.bus.send_to_node_sync({
-            "command": "rpc",
-            "object": "Server",
-            "method": "getMissionList",
-            "server_name": self.name
-        }, timeout=timeout, node=self.node.name)
-        return data['return']
 
     async def apply_mission_changes(self, filename: Optional[str] = None) -> str:
         timeout = 120 if not self.node.slow_system else 240
@@ -294,9 +267,9 @@ class ServerProxy(Server):
             }
         }, timeout=timeout, node=self.node.name)
 
-    async def addMission(self, path: str, *, autostart: Optional[bool] = False) -> None:
+    async def addMission(self, path: str, *, autostart: Optional[bool] = False) -> list[str]:
         timeout = 60 if not self.node.slow_system else 120
-        await self.bus.send_to_node_sync({
+        data = await self.bus.send_to_node_sync({
             "command": "rpc",
             "object": "Server",
             "method": "addMission",
@@ -306,10 +279,15 @@ class ServerProxy(Server):
                 "autostart": autostart
             }
         }, timeout=timeout, node=self.node.name)
+        # wait for the missionList sync
+        while path not in self.settings['missionList']:
+            await asyncio.sleep(1)
+        return data['return']
 
-    async def deleteMission(self, mission_id: int) -> None:
+    async def deleteMission(self, mission_id: int) -> list[str]:
         timeout = 60 if not self.node.slow_system else 120
-        await self.bus.send_to_node_sync({
+        path = self.settings['missionList'][mission_id - 1]
+        data = await self.bus.send_to_node_sync({
             "command": "rpc",
             "object": "Server",
             "method": "deleteMission",
@@ -318,10 +296,14 @@ class ServerProxy(Server):
                 "mission_id": mission_id
             }
         }, timeout=timeout, node=self.node.name)
+        # wait for the missionList sync
+        while path in self.settings['missionList']:
+            await asyncio.sleep(1)
+        return data['return']
 
-    async def replaceMission(self, mission_id: int, path: str) -> None:
+    async def replaceMission(self, mission_id: int, path: str) -> list[str]:
         timeout = 60 if not self.node.slow_system else 120
-        await self.bus.send_to_node_sync({
+        data = await self.bus.send_to_node_sync({
             "command": "rpc",
             "object": "Server",
             "method": "replaceMission",
@@ -331,10 +313,11 @@ class ServerProxy(Server):
                 "path": path
             }
         }, timeout=timeout, node=self.node.name)
+        return data['return']
 
-    async def loadMission(self, mission: Union[int, str], modify_mission: Optional[bool] = True) -> None:
+    async def loadMission(self, mission: Union[int, str], modify_mission: Optional[bool] = True) -> bool:
         timeout = 180 if not self.node.slow_system else 300
-        await self.bus.send_to_node_sync({
+        data = await self.bus.send_to_node_sync({
             "command": "rpc",
             "object": "Server",
             "method": "loadMission",
@@ -344,10 +327,11 @@ class ServerProxy(Server):
                 "modify_mission": modify_mission
             }
         }, timeout=timeout, node=self.node.name)
+        return data['return']
 
-    async def loadNextMission(self, modify_mission: Optional[bool] = True) -> None:
+    async def loadNextMission(self, modify_mission: Optional[bool] = True) -> bool:
         timeout = 180 if not self.node.slow_system else 300
-        await self.bus.send_to_node_sync({
+        data = await self.bus.send_to_node_sync({
             "command": "rpc",
             "object": "Server",
             "method": "loadNextMission",
@@ -356,6 +340,7 @@ class ServerProxy(Server):
                 "modify_mission": modify_mission
             }
         }, timeout=timeout, node=self.node.name)
+        return data['return']
 
     async def run_on_extension(self, extension: str, method: str, **kwargs) -> Any:
         timeout = 180 if not self.node.slow_system else 300
@@ -408,4 +393,13 @@ class ServerProxy(Server):
             "params": {
                 "name": name
             }
+        }, timeout=timeout, node=self.node.name)
+
+    async def cleanup(self) -> None:
+        timeout = 180 if not self.node.slow_system else 300
+        await self.bus.send_to_node_sync({
+            "command": "rpc",
+            "object": "Server",
+            "method": "cleanup",
+            "server_name": self.name
         }, timeout=timeout, node=self.node.name)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import builtins
+import functools
 import hashlib
 import importlib
 import json
@@ -16,6 +17,7 @@ import shutil
 import string
 import tempfile
 import threading
+import time
 import unicodedata
 
 # for eval
@@ -26,7 +28,7 @@ from croniter import croniter
 from datetime import datetime, timedelta
 from importlib import import_module
 from pathlib import Path
-from typing import Optional, Union, TYPE_CHECKING, Generator, Iterable
+from typing import Optional, Union, TYPE_CHECKING, Generator, Iterable, Callable, Any
 from urllib.parse import urlparse
 
 # ruamel YAML support
@@ -37,6 +39,7 @@ yaml = YAML()
 
 if TYPE_CHECKING:
     from core import ServerProxy, DataObject, Node
+    from services.servicebus import ServiceBus
 
 __all__ = [
     "parse_time",
@@ -58,6 +61,8 @@ __all__ = [
     "is_github_repo",
     "matches_cron",
     "dynamic_import",
+    "async_cache",
+    "cache_with_expiration",
     "ThreadSafeDict",
     "SettingsDict",
     "RemoteSettingsDict",
@@ -444,6 +449,53 @@ def dynamic_import(package_name: str):
             globals()[module_name] = importlib.import_module(f"{package_name}.{module_name}")
 
 
+def async_cache(func):
+    cache = {}
+
+    @functools.wraps(func)
+    async def wrapper(*args):
+        if args in cache:
+            return cache[args]
+        result = await func(*args)
+        cache[args] = result
+        return result
+
+    return wrapper
+
+
+def cache_with_expiration(expiration: int):
+    """
+    Decorator to cache function results for a specific duration.
+
+    :param expiration: Cache duration in seconds.
+    """
+
+    def decorator(func: Callable) -> Callable:
+        cache: dict[Any, Any] = {}
+        cache_expiry: dict[Any, float] = {}
+
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            # Generate a key based on function arguments
+            hashable_kwargs = {k: tuple(v) if isinstance(v, list) else v for k, v in kwargs.items()}
+            cache_key = (args, frozenset(hashable_kwargs.items()))
+
+            # Check if the cache is still valid
+            if cache_key in cache and cache_key in cache_expiry:
+                if time.time() < cache_expiry[cache_key]:
+                    return cache[cache_key]
+
+            # Call the original function and cache its result
+            result = await func(*args, **kwargs)
+            cache[cache_key] = result
+            cache_expiry[cache_key] = time.time() + expiration
+            return result
+
+        return wrapper
+
+    return decorator
+
+
 class ThreadSafeDict(dict):
     def __init__(self, *args, **kwargs):
         self.lock = threading.Lock()
@@ -513,6 +565,7 @@ class SettingsDict(dict):
         self.mtime = 0
         self.obj = obj
         self.log = obj.log
+        self._bus = None
         self.read_file()
 
     def read_file(self):
@@ -558,6 +611,40 @@ class SettingsDict(dict):
         finally:
             os.remove(tmpname)
 
+    @property
+    def bus(self) -> "ServiceBus":
+        if self._bus is None:
+            from core.services.registry import ServiceRegistry
+            from services.servicebus import ServiceBus
+
+            self._bus = ServiceRegistry.get(ServiceBus)
+        return self._bus
+
+    def update_master(self, key, value = None, *, method: str):
+        if self.root == 'cfg':
+            obj = '_settings'
+        else:
+            obj = '_options'
+        params = {
+            "key": key,
+            "sync": False
+        }
+        if value:
+            params['value'] = value
+        msg = {
+            "command": "rpc",
+            "object": "Server",
+            "server_name": self.obj.name,
+            "method": f"{obj}.{method}",
+            "params": {
+                "key": key,
+                "value": value,
+                "sync": False
+            }
+        }
+        if self.bus:
+            asyncio.create_task(self.bus.send_to_node(msg))
+
     def __setitem__(self, key, value):
         if os.path.exists(self.path) and self.mtime < os.path.getmtime(self.path):
             self.log.debug(f'{self.path} changed, re-reading from disk.')
@@ -565,6 +652,8 @@ class SettingsDict(dict):
         super().__setitem__(key, value)
         if len(self):
             self.write_file()
+            if not self.obj.node.master:
+                self.update_master(key, value, method='__setitem__')
         else:
             self.log.error("- Writing of {} aborted due to empty set.".format(os.path.basename(self.path)))
 
@@ -581,6 +670,8 @@ class SettingsDict(dict):
         super().__delitem__(key)
         if len(self):
             self.write_file()
+            if not self.obj.node.master:
+                self.update_master(key, method='__delitem__')
         else:
             self.log.error("- Writing of {} aborted due to empty set.".format(os.path.basename(self.path)))
 
@@ -618,37 +709,43 @@ class RemoteSettingsDict(dict):
 
     """
     def __init__(self, server: ServerProxy, obj: str, data: Optional[dict] = None):
+        from core.services.registry import ServiceRegistry
+        from services.servicebus import ServiceBus
+
         self.server = server
         self.obj = obj
+        self.bus = ServiceRegistry.get(ServiceBus)
         if data:
             super().__init__(data)
 
-    def __setitem__(self, key, value):
+    def __setitem__(self, key, value, *, sync: bool = True):
         super().__setitem__(key, value)
-        msg = {
-            "command": "rpc",
-            "object": "Server",
-            "server_name": self.server.name,
-            "method": f"{self.obj}.__setitem__",
-            "params": {
-                "key": key,
-                "value": value
+        if sync:
+            msg = {
+                "command": "rpc",
+                "object": "Server",
+                "server_name": self.server.name,
+                "method": f"{self.obj}.__setitem__",
+                "params": {
+                    "key": key,
+                    "value": value
+                }
             }
-        }
-        asyncio.create_task(self.server.send_to_dcs(msg))
+            asyncio.create_task(self.bus.send_to_node(msg, node=self.server.node))
 
-    def __delitem__(self, key):
+    def __delitem__(self, key, *, sync: bool = True):
         super().__delitem__(key)
-        msg = {
-            "command": "rpc",
-            "object": "Server",
-            "server_name": self.server.name,
-            "method": f"{self.obj}.__delitem__",
-            "params": {
-                "key": key
+        if sync:
+            msg = {
+                "command": "rpc",
+                "object": "Server",
+                "server_name": self.server.name,
+                "method": f"{self.obj}.__delitem__",
+                "params": {
+                    "key": key
+                }
             }
-        }
-        asyncio.create_task(self.server.send_to_dcs(msg))
+            asyncio.create_task(self.bus.send_to_node(msg, node=self.server.node))
 
 
 def tree_delete(d: dict, key: str, debug: Optional[bool] = False):

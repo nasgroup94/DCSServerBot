@@ -123,7 +123,8 @@ class MonitoringService(Service):
             "Login Failed",
             "DCS Login",
             "Authorization failed",
-            "Login session has expired"
+            "Login session has expired",
+            "Mission script error"
         ]:
             handle = win32gui.FindWindowEx(None, None, None, title)
             if handle:
@@ -164,9 +165,9 @@ class MonitoringService(Service):
             await self.warn_admins(server, title=f'Server \"{server.name}\" unreachable', message=message)
 
     async def heartbeat(self):
-        for server in list(self.bus.servers.values()):  # type: ServerImpl
+        for server in self.bus.servers.values():  # type: ServerImpl
             # don't test remote servers or servers that are not initialized or shutdown
-            if server.is_remote or server.status in [Status.UNREGISTERED, Status.SHUTDOWN]:
+            if server.is_remote or server.status in [Status.UNREGISTERED, Status.SHUTTING_DOWN, Status.SHUTDOWN]:
                 continue
             # check if the process is dead (on load it might take some seconds for the process to appear)
             if server.process and not await server.is_running():
@@ -175,6 +176,9 @@ class MonitoringService(Service):
                     return
                 # only escalate, if the server was not stopped (maybe the process was manually shut down)
                 if server.status != Status.STOPPED:
+                    now = datetime.now(timezone.utc)
+                    shutil.copy2(os.path.join(server.instance.home, 'Logs', 'dcs.log'),
+                                 os.path.join(server.instance.home, 'Logs', f"dcs-{now.strftime('%Y%m%d-%H%M%S')}.log"))
                     title = f'Server "{server.name}" died!'
                     message = 'Setting state to SHUTDOWN.'
                     self.log.warning(title + ' ' + message)
@@ -198,6 +202,7 @@ class MonitoringService(Service):
                     # check extension states
                     for ext in [x for x in server.extensions.values() if not await asyncio.to_thread(x.is_running)]:
                         try:
+                            self.log.warning(f"{ext.name} died - restarting ...")
                             await ext.startup()
                         except Exception as ex:
                             self.log.exception(ex)
@@ -262,6 +267,38 @@ class MonitoringService(Service):
                 await self.bus.send_to_node(await asyncio.to_thread(self._pull_load_params, server))
             except (psutil.AccessDenied, PermissionError):
                 self.log.debug(f"Server {server.name} was not started by the bot, skipping server load gathering.")
+            except psutil.NoSuchProcess:
+                self.log.debug(f"Server {server.name} died, skipping server load gathering.")
+
+    @staticmethod
+    def convert_bytes(size_bytes: int) -> str:
+        scales = ('B', 'KB', 'MB', 'GB', 'TB')
+        if size_bytes == 0:
+            return "0B"
+        idx = 0
+        while size_bytes >= 1024 and idx < len(scales) - 1:
+            size_bytes /= 1024.0
+            idx += 1
+        return f"{size_bytes:.2f}{scales[idx]}"
+
+    async def drive_check(self):
+        for drive in self.space_warning_sent.keys():
+            total, free = utils.get_drive_space(drive)
+            warn_pct = (self.get_config().get('drive_warn_threshold', 10)) / 100
+            alert_pct = (self.get_config().get('drive_alert_threshold', 5)) / 100
+            if (free < total * warn_pct) and not self.space_warning_sent[drive]:
+                message = (f"Your freespace on {drive} is below {warn_pct * 100}%!\n{self.convert_bytes(free)} of "
+                           f"{self.convert_bytes(total)} bytes free.")
+                self.log.warning(message)
+                await self.node.audit(message)
+                self.space_warning_sent[drive] = True
+            if (free < total * alert_pct) and not self.space_alert_sent[drive]:
+                message = (f"Your freespace on {drive} is below {alert_pct * 100}%!\n{self.convert_bytes(free)} of "
+                           f"{self.convert_bytes(total)} bytes free.")
+                self.log.error(message)
+                await self.send_alert(title=f"Your DCS drive on node {self.node.name} is running out of space!",
+                                      message=message)
+                self.space_alert_sent[drive] = True
 
     @tasks.loop(minutes=1.0)
     async def monitoring(self):
@@ -269,21 +306,7 @@ class MonitoringService(Service):
             if sys.platform == 'win32':
                 await self.check_popups()
             await self.heartbeat()
-            for drive in self.space_warning_sent.keys():
-                total, free = utils.get_drive_space(drive)
-                warn_pct = (self.get_config().get('drive_warn_threshold', 10)) / 100
-                alert_pct = (self.get_config().get('drive_alert_threshold', 5)) / 100
-                if (free < total * warn_pct) and not self.space_warning_sent[drive]:
-                    message = f"Your freespace on {drive} is below {warn_pct * 100}%!"
-                    self.log.warning(message)
-                    await self.node.audit(message)
-                    self.space_warning_sent[drive] = True
-                if (free < total * alert_pct) and not self.space_alert_sent[drive]:
-                    message = f"Your freespace on {drive} is below {alert_pct * 100}%!"
-                    self.log.error(message)
-                    await self.send_alert(title=f"Your DCS drive on node {self.node.name} is running out of space!",
-                                          message=message)
-                    self.space_alert_sent[drive] = True
+            await self.drive_check()
             if 'serverstats' in self.node.config.get('opt_plugins', []):
                 await self.serverload()
             if self.node.locals.get('nodestats', True):

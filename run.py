@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import certifi
 import discord
 import logging
 import os
@@ -15,8 +16,6 @@ from core import (
     CloudRotatingFileHandler
 )
 from datetime import datetime
-from install import Install
-from migrate import migrate
 from pid import PidFile, PidFileError
 from rich import print
 from rich.console import Console
@@ -46,7 +45,7 @@ class Main:
         utils.dynamic_import('services')
 
     @staticmethod
-    def setup_logging(node: str):
+    def setup_logging(node: str, config_dir: str):
         def time_formatter(time: datetime, _: str = None) -> Text:
             return Text(time.strftime('%H:%M:%S'))
 
@@ -56,7 +55,7 @@ class Main:
 
         # Setup file logging
         try:
-            config = yaml.load(pathlib.Path('config/main.yaml').read_text(encoding='utf-8'))['logging']
+            config = yaml.load(pathlib.Path(os.path.join(config_dir, 'main.yaml')).read_text(encoding='utf-8'))['logging']
         except (FileNotFoundError, KeyError, YAMLError):
             config = {}
         os.makedirs('logs', exist_ok=True)
@@ -122,6 +121,8 @@ class Main:
             cloud_drive = self.node.locals.get('cloud_drive', True)
             if (cloud_drive and self.node.master) or not cloud_drive:
                 await self.node.upgrade()
+                if self.node.is_shutdown.is_set():
+                    return
         elif self.node.master and await self.node.upgrade_pending():
             self.log.warning(
                 "New update for DCSServerBot available!\nUse /node upgrade or enable autoupdate to apply it.")
@@ -202,7 +203,7 @@ if __name__ == "__main__":
     args = COMMAND_LINE_ARGS
 
     # Setup the logging
-    Main.setup_logging(args.node)
+    Main.setup_logging(args.node, args.config)
     log = logging.getLogger("dcsserverbot")
     # check if we should reveal the passwords
     utils.create_secret_dir(args.config)
@@ -217,14 +218,21 @@ if __name__ == "__main__":
     elif int(platform.python_version_tuple()[1]) == 9:
         log.warning("Python 3.9 is outdated, you should consider upgrading it to 3.10 or higher.")
 
+    # Add certificates
+    os.environ["SSL_CERT_FILE"] = certifi.where()
+
     # Call the DCSServerBot 2.x migration utility
     if os.path.exists(os.path.join(args.config, 'dcsserverbot.ini')):
-        migrate(node=args.node)
+        from migrate import migrate_3
+
+        migrate_3(node=args.node)
     try:
         with PidFile(pidname=f"dcssb_{args.node}", piddir='.'):
             try:
                 rc = asyncio.run(run_node(name=args.node, config_dir=args.config, no_autoupdate=args.noupdate))
             except FatalException:
+                from install import Install
+
                 Install(node=args.node).install(config_dir=args.config, user='dcsserverbot', database='dcsserverbot')
                 rc = asyncio.run(run_node(name=args.node, config_dir=args.config, no_autoupdate=args.noupdate))
     except PermissionError:

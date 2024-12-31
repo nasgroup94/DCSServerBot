@@ -32,7 +32,7 @@ async def backup_autocomplete(interaction: discord.Interaction, current: str) ->
 
 async def date_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     async def get_all_dates(node: Node, target: str) -> list[str]:
-        all_directories = await node.list_directory(target, f"{node.name.lower()}_*")
+        _, all_directories = await node.list_directory(target, pattern=f"{node.name.lower()}_*")
 
         date_pattern = re.compile(rf"{node.name.lower()}_([0-9]{{8}})")
         dates = []
@@ -61,12 +61,13 @@ class Backup(Plugin):
                                           plugin=self.plugin_name)
 
     def read_locals(self) -> dict:
-        if not os.path.exists('config/services/backup.yaml'):
+        config_file = os.path.join(self.node.config_dir, 'services', 'backup.yaml')
+        if not os.path.exists(config_file):
             return {}
         try:
-            return yaml.load(Path('config/services/backup.yaml').read_text(encoding='utf-8'))
+            return yaml.load(Path(config_file).read_text(encoding='utf-8'))
         except MarkedYAMLError as ex:
-            raise YAMLError('config/services/backup.yaml', ex)
+            raise YAMLError(config_file, ex)
 
     @command(description=_('Backup your data'))
     @app_commands.guild_only()

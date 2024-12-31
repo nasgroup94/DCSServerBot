@@ -102,6 +102,8 @@ class MissionEventListener(EventListener):
         if command.name == 'linkme':
             if player.verified or isinstance(self.bot, DummyBot):
                 return False
+        if command.name == '911' and not self.bot.get_admin_channel(server):
+            return False
         return await super().can_run(command, server, player)
 
     async def work_queue(self):
@@ -280,19 +282,32 @@ class MissionEventListener(EventListener):
                 })
 
     async def _watchlist_alert(self, server: Server, player: Player):
+        admin_channel = self.bot.get_admin_channel(server)
+        if not admin_channel:
+            return
+        async with self.apool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute("SELECT reason, created_by, created_at FROM watchlist WHERE player_ucid = %s",
+                                    (player.ucid, ))
+                row = await cursor.fetchone()
+        if not row:
+            return
         mentions = ''.join([self.bot.get_role(role).mention for role in self.bot.roles['DCS Admin']])
         embed = discord.Embed(title='Watchlist member joined!', colour=discord.Color.red())
         embed.description = "A user just joined that you put on the watchlist."
         embed.add_field(name="Server", value=server.name, inline=False)
         embed.add_field(name="Player", value=player.name)
         embed.add_field(name="UCID", value=player.ucid)
+        embed.add_field(name='_ _', value='_ _')
         if player.member:
-            embed.add_field(name="_ _", value='_ _')
             embed.add_field(name="Member", value=player.member.display_name)
             embed.add_field(name="Discord ID", value=player.member.id)
             embed.add_field(name="_ _", value='_ _')
+        embed.add_field(name="Reason", value=row.get('reason', 'n/a'))
+        embed.add_field(name="Added by", value=row['created_by'])
+        embed.add_field(name="Added at", value=f"<t:{int(row['created_at'].timestamp())}:f>")
         embed.set_footer(text="Players can be removed from the watchlist by using the /info command.")
-        await self.bot.get_admin_channel(server).send(mentions, embed=embed)
+        await admin_channel.send(mentions, embed=embed)
 
     async def _threshold_alert(self, server: Server, config: dict):
         if server.name in self.alert_fired:
@@ -312,7 +327,7 @@ class MissionEventListener(EventListener):
             embed.description = f"Server {server.display_name} has less than {min_threshold} players."
         elif max_threshold:
             embed.description = f"Server {server.display_name} has more than {max_threshold} players."
-        channel = self.bot.get_channel(config.get('channel', server.channels[Channel.STATUS]))
+        channel = self.bot.get_channel(config.get('channel', server.channels.get(Channel.STATUS, -1)))
         if channel:
             await channel.send(mentions, embed=embed)
         else:
@@ -344,7 +359,7 @@ class MissionEventListener(EventListener):
         if 'admin' not in channels:
             admin_channel = self.bot.get_admin_channel(server)
             if admin_channel:
-                channels['admin'] = self.bot.get_admin_channel(server).id
+                channels['admin'] = admin_channel.id
         # noinspection PyAsyncCall
         asyncio.create_task(server.send_to_dcs({
             'command': 'loadParams',
@@ -354,7 +369,8 @@ class MissionEventListener(EventListener):
                 "profanity_filter": server.locals.get('profanity_filter', False),
                 "messages": server.locals.get('messages'),
                 "channels": channels,
-                "slot_spamming": server.locals.get('slot_spamming')
+                "slot_spamming": server.locals.get('slot_spamming'),
+                "smart_bans": server.locals.get('smart_bans', True)
             }
         }))
         if not data.get('current_mission'):
@@ -409,9 +425,8 @@ class MissionEventListener(EventListener):
             if Side(p['side']) == Side.SPECTATOR:
                 server.afk[player.ucid] = datetime.now(timezone.utc)
         # cleanup inactive players
-        for p in list(server.players.values()):
-            if not p.active and not p.id == 1:
-                del server.players[p.id]
+        for player_id in [p.id for p in server.players.values() if not p.active and p.id != 1]:
+            del server.players[player_id]
         # check if we are idle
         if not server.is_populated():
             server.idle_since = datetime.now(tz=timezone.utc)
@@ -453,6 +468,10 @@ class MissionEventListener(EventListener):
 
     async def _smooth_pause(self, server: Server, seconds: int):
         if server.current_mission:
+            # wait for the server to be initialised correctly
+            while server.status == Status.LOADING:
+                await asyncio.sleep(1)
+            # now do the smooth pause
             self.log.debug(f"Smooth pausing server {server.name} after {seconds}s")
             await server.current_mission.unpause()
             await asyncio.sleep(seconds)
@@ -574,9 +593,11 @@ class MissionEventListener(EventListener):
         if not player.member:
             # only warn for unknown users if it is a non-public server and automatch is on
             if self.bot.locals.get('automatch', True) and server.settings['password']:
-                # noinspection PyAsyncCall
-                asyncio.create_task(self.bot.get_admin_channel(server).send(
-                    f"Player {player.display_name} (ucid={player.ucid}) can't be matched to a discord user."))
+                admin_channel = self.bot.get_admin_channel(server)
+                if admin_channel:
+                    # noinspection PyAsyncCall
+                    asyncio.create_task(admin_channel.send(
+                        f"Player {player.display_name} (ucid={player.ucid}) can't be matched to a discord user."))
             if not isinstance(self.bot, DummyBot):
                 # noinspection PyAsyncCall
                 asyncio.create_task(player.sendChatMessage(
@@ -593,7 +614,7 @@ class MissionEventListener(EventListener):
             if server.locals.get('force_voice', False):
                 # we do not check DCS Admin users
                 if not utils.check_roles(self.bot.roles['DCS Admin'], player.member):
-                    voice: discord.VoiceChannel = self.bot.get_channel(server.channels[Channel.VOICE])
+                    voice: discord.VoiceChannel = self.bot.get_channel(server.channels.get(Channel.VOICE, -1))
                     if not voice:
                         self.log.error(
                             f"force_voice is enabled for server {server.name}, but no voice channel is configured!")
@@ -665,8 +686,7 @@ class MissionEventListener(EventListener):
                 if player.ucid in server.afk:
                     del server.afk[player.ucid]
                 side = Side(data['side'])
-                self.send_dcs_event(server, side, self.EVENT_TEXTS[side]['change_slot'].format(
-                    player.side.name if player.side != Side.SPECTATOR else 'NEUTRAL',
+                self.send_dcs_event(server, side, self.EVENT_TEXTS[side]['change_slot'].format(player.side.name,
                     data['name'], Side(data['side']).name, data['unit_type']))
             else:
                 server.afk[player.ucid] = datetime.now(timezone.utc)
@@ -729,10 +749,12 @@ class MissionEventListener(EventListener):
                     if player1.member else ('Player ' + player1.display_name)
                 message = f"{name} (ucid={player1.ucid}) is killing team members."
                 # show the server name on central admin channels
-                if self.bot.locals.get('admin_channel'):
+                if self.bot.locals.get('channels', {}).get('admin'):
                     message = f"{server.display_name}: " + message
-                # noinspection PyAsyncCall
-                asyncio.create_task(self.bot.get_admin_channel(server).send(message))
+                admin_channel = self.bot.get_admin_channel(server)
+                if admin_channel:
+                    # noinspection PyAsyncCall
+                    asyncio.create_task(admin_channel.send(message))
         elif data['eventName'] in ['takeoff', 'landing', 'crash', 'eject', 'pilot_death']:
             player = server.get_player(id=data['arg1'])
             side = player.side if player else Side.UNKNOWN
@@ -796,7 +818,8 @@ class MissionEventListener(EventListener):
     @chat_command(name="atis", usage="<airport>", help="display ATIS information")
     async def atis(self, server: Server, player: Player, params: list[str]):
         if len(params) == 0:
-            await player.sendChatMessage(f"Usage: -atis <airbase/code>")
+            await player.sendChatMessage("Usage: {prefix}{command} <airbase/code>".format(
+                prefix=self.prefix, command=self.atis.name))
             return
         name = ' '.join(params)
         for airbase in server.current_mission.airbases:
@@ -836,40 +859,40 @@ class MissionEventListener(EventListener):
             mission = missions[i]
             mission = mission[(mission.rfind(os.path.sep) + 1):-4]
             message += f"{i + 1} {mission}\n"
-        message += f"\nUse {self.prefix}load <number> to load that mission"
+        message += f"\nUse {self.prefix}{self.load.name} <number> to load that mission"
         await player.sendUserMessage(message, 30)
 
     @chat_command(name="load", roles=['DCS Admin'], usage="<number>", help="load a specific mission")
     async def load(self, server: Server, player: Player, params: list[str]):
         if not params or not params[0].isnumeric():
-            await player.sendChatMessage(f"Usage: {self.prefix}load <number>")
+            await player.sendChatMessage(f"Usage: {self.prefix}{self.load.name} <number>")
             return
         # noinspection PyAsyncCall
         asyncio.create_task(server.loadMission(int(params[0])))
 
     @chat_command(name="ban", roles=['DCS Admin'], usage="<name> [reason]", help="ban a user for 3 days")
     async def ban(self, server: Server, player: Player, params: list[str]):
-        await self._handle_command(server, player, params, lambda delinquent, reason: (
-            ServiceRegistry.get(ServiceBus).ban(delinquent.ucid, player.member.display_name, reason, 3),
+        await self._handle_command(server, player, params, self.ban.name, lambda delinquent, reason: (
+            ServiceRegistry.get(ServiceBus).ban(delinquent.ucid, player.name, reason, 3),
             f'User {delinquent.display_name} banned for 3 days'))
 
     @chat_command(name="kick", roles=['DCS Admin'], usage="<name> [reason]", help="kick a user")
     async def kick(self, server: Server, player: Player, params: list[str]):
-        await self._handle_command(server, player, params, lambda delinquent, reason: (
+        await self._handle_command(server, player, params, self.kick.name, lambda delinquent, reason: (
             server.kick(delinquent, reason),
             f'User {delinquent.display_name} kicked'))
 
     @chat_command(name="spec", roles=['DCS Admin'], usage="<name> [reason]", help="moves a user to spectators")
     async def spec(self, server: Server, player: Player, params: list[str]):
-        await self._handle_command(server, player, params, lambda delinquent, reason: (
+        await self._handle_command(server, player, params, self.spec.name, lambda delinquent, reason: (
             server.move_to_spectators(delinquent, reason),
             f'User {delinquent.display_name} moved to spectators'))
 
     async def _handle_command(self, server: Server, player: Player, params: list[str],
-                              action: Callable[[Player, str], tuple[Coroutine, str]]):
+                              cmd: str, action: Callable[[Player, str], tuple[Coroutine, str]]):
         if not params:
             await player.sendChatMessage(
-                f"Usage: {self.prefix}{action.__name__} <name> [reason]")
+                f"Usage: {self.prefix}{cmd} <name> [reason]")
             return
 
         params = shlex.split(' '.join(params))
@@ -887,13 +910,14 @@ class MissionEventListener(EventListener):
 
         await player.sendChatMessage(audit_msg)
         await self.bot.audit(f'Player {delinquent.display_name} {action_description}' +
-                             (f' with reason "{reason}".' if reason != 'n/a' else '.'), user=player.member)
+                             (f' with reason "{reason}".' if reason != 'n/a' else '.'),
+                             user=player.member or player.ucid)
 
     @chat_command(name="linkme", usage="<token>", help="link your user to Discord")
     async def linkme(self, server: Server, player: Player, params: list[str]):
         if not params:
             await player.sendChatMessage(
-                f"Usage: {self.prefix}linkme token\nYou get the token with /linkme in our Discord.")
+                f"Usage: {self.prefix}{self.linkme.name} token\nYou get the token with /linkme in our Discord.")
             return
 
         token = params[0]
@@ -902,8 +926,10 @@ class MissionEventListener(EventListener):
             row = await cursor.fetchone()
             if not row or len(token) > 4:
                 await player.sendChatMessage('Invalid token.')
-                await self.bot.get_admin_channel(server).send(
-                    f'Player {player.display_name} (ucid={player.ucid}) entered a non-existent linking token.')
+                admin_channel = self.bot.get_admin_channel(server)
+                if admin_channel:
+                    await admin_channel.send(
+                        f'Player {player.display_name} (ucid={player.ucid}) entered a non-existent linking token.')
                 return
             discord_id = row[0]
         member = self.bot.guilds[0].get_member(discord_id)
@@ -966,7 +992,7 @@ class MissionEventListener(EventListener):
     @chat_command(name="911", usage="<message>", help="send an alert to admins (misuse will be punished!)")
     async def call911(self, server: Server, player: Player, params: list[str]):
         if not params:
-            await player.sendChatMessage(f"Usage: {self.prefix}911 <message>")
+            await player.sendChatMessage(f"Usage: {self.prefix}{self.call911.name} <message>")
             return
         mentions = ''.join([self.bot.get_role(role).mention for role in self.bot.roles['DCS Admin']])
         message = ' '.join(params)
@@ -981,17 +1007,30 @@ class MissionEventListener(EventListener):
     @chat_command(name="preset", aliases=["presets"], roles=['DCS Admin'], usage="<preset>",
                   help="load a specific weather preset")
     async def preset(self, server: Server, player: Player, params: list[str]):
-        async def change_preset(preset: str):
-            filename = await server.get_current_mission_file()
-            if not server.node.config.get('mission_rewrite', True):
-                await server.stop()
-            new_filename = await server.modifyMission(filename, utils.get_preset(self.node, preset))
-            if new_filename != filename:
-                await server.replaceMission(int(server.settings['listStartIndex']), new_filename)
-            await server.restart(modify_mission=False)
-            if server.status == Status.STOPPED:
-                await server.start()
-            await self.bot.audit(f"changed preset to {preset}", server=server, user=player.ucid)
+        async def change_preset(preset_name: str):
+            preset = utils.get_preset(self.node, preset_name)
+            if ('fog' in preset and
+                    (preset['fog'].get('mode') == "manual" or all(isinstance(x, int) for x in preset['fog'].keys()))):
+                preset['fog'].pop('mode', None)
+                await server.send_to_dcs_sync(
+                    {
+                        'command': 'setFogAnimation',
+                        'values': [
+                            (key, value["visibility"], value["thickness"])
+                            for key, value in preset['fog'].items()
+                        ]
+                    })
+            else:
+                filename = await server.get_current_mission_file()
+                if not server.locals.get('mission_rewrite', True):
+                    await server.stop()
+                new_filename = await server.modifyMission(filename, preset)
+                if new_filename != filename:
+                    await server.replaceMission(int(server.settings['listStartIndex']), new_filename)
+                await server.restart(modify_mission=False)
+                if server.status == Status.STOPPED:
+                    await server.start()
+            await self.bot.audit(f"changed preset to {preset_name}", server=server, user=player.ucid)
 
         presets = list(utils.get_presets(self.node))
         if presets:
@@ -1000,7 +1039,7 @@ class MissionEventListener(EventListener):
                 for idx, preset in enumerate(presets):
                     message += f"{idx + 1} {preset}\n"
                 message += f"\nUse {self.prefix}preset <number> to load that preset " \
-                           f"(mission will be restarted!)"
+                           f"(mission might be restarted!)"
                 await player.sendUserMessage(message, 30)
             else:
                 n = int(params[0]) - 1

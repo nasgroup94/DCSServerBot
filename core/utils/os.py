@@ -1,10 +1,9 @@
-import platform
-
 import aiohttp
 import ipaddress
 import logging
 import os
 import pickle
+import platform
 import psutil
 import socket
 import stat
@@ -39,6 +38,7 @@ __all__ = [
     "list_all_files",
     "make_unix_filename",
     "safe_rmtree",
+    "is_junction",
     "terminate_process",
     "quick_edit_mode",
     "create_secret_dir",
@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 def is_open(ip, port):
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-        s.settimeout(0.5)
+        s.settimeout(1.0)
         return s.connect_ex((ip, int(port))) == 0
 
 
@@ -147,7 +147,8 @@ def safe_rmtree(path: Union[str, Path]):
     # if path is a single file, delete that
     if os.path.isfile(path):
         os.chmod(path, stat.S_IWUSR)
-        os.remove(path)
+        with suppress(FileNotFoundError):
+            os.remove(path)
         return
     # otherwise delete the tree
     elif os.path.isdir(path):
@@ -155,13 +156,27 @@ def safe_rmtree(path: Union[str, Path]):
             for name in files:
                 filename = os.path.join(root, name)
                 os.chmod(filename, stat.S_IWUSR)
-                os.remove(filename)
+                with suppress(FileNotFoundError):
+                    os.remove(filename)
             for name in dirs:
                 dirname = os.path.join(root, name)
                 os.chmod(dirname, stat.S_IWUSR)
-                os.rmdir(dirname)
+                with suppress(FileNotFoundError):
+                    os.rmdir(dirname)
         os.chmod(path, stat.S_IWUSR)
-        os.rmdir(path)
+        with suppress(FileNotFoundError):
+            os.rmdir(path)
+
+
+def is_junction(path):
+    if not os.path.exists(path):
+        return False
+    if os.path.islink(path):
+        return True
+    attrs = ctypes.windll.kernel32.GetFileAttributesW(path)
+    if attrs == -1:
+        raise ctypes.WinError()
+    return bool(attrs & 0x0400)
 
 
 def terminate_process(process: Optional[psutil.Process]):
@@ -207,7 +222,7 @@ def set_password(key: str, password: str, config_dir='config'):
 def get_password(key: str, config_dir='config') -> str:
     try:
         with open(os.path.join(config_dir, '.secret', f'{key}.pkl'), mode='rb') as f:
-            return pickle.load(f)
+            return str(pickle.load(f))
     except FileNotFoundError:
         raise ValueError(key)
 

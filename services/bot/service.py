@@ -5,6 +5,7 @@ import discord
 import os
 import zipfile
 
+from aiohttp import BasicAuth
 from core import utils, FatalException, Node
 from core.services.base import Service
 from core.services.registry import ServiceRegistry
@@ -55,12 +56,21 @@ class BotService(Service):
         utils.set_password('token', token, self.node.config_dir)
         return True
 
+    def _secure_proxy_pass(self) -> bool:
+        password = self.locals.get('proxy', {}).pop('password', None)
+        if not password:
+            return False
+        self.log.info("Proxy password found, removing it from yaml ...")
+        utils.set_password('proxy', password, self.node.config_dir)
+        return True
+
     def __init__(self, node):
         super().__init__(node=node, name="Bot")
         self.bot: Optional[DCSServerBot] = None
         # do we need to change the bot.yaml file?
         dirty = self._migrate_autorole()
         dirty = self._secure_token() or dirty
+        dirty = self._secure_proxy_pass() or dirty
         if dirty:
             self.save_config()
 
@@ -70,6 +80,20 @@ class BotService(Service):
             return utils.get_password('token', self.node.config_dir)
         except ValueError:
             return None
+
+    @property
+    def proxy(self) -> Optional[str]:
+        return self.locals.get('proxy', {}).get('url')
+
+    @property
+    def proxy_auth(self) -> Optional[BasicAuth]:
+        username = self.locals.get('proxy', {}).get('username')
+        try:
+            password = utils.get_password('proxy', self.node.config_dir)
+        except ValueError:
+            return None
+        if username and password:
+            return BasicAuth(username, password)
 
     def init_bot(self):
         def get_prefix(client, message):
@@ -84,6 +108,7 @@ class BotService(Service):
                             locals=self.locals)
         else:
             # Create the Bot
+            proxy = self.locals.get('proxy', {}).get('url')
             return DCSServerBot(version=self.node.bot_version,
                                 sub_version=self.node.sub_version,
                                 command_prefix=get_prefix,
@@ -97,7 +122,9 @@ class BotService(Service):
                                 activity=discord.Game(
                                     name=self.locals['discord_status']) if 'discord_status' in self.locals else None,
                                 heartbeat_timeout=120,
-                                assume_unsync_clock=True)
+                                assume_unsync_clock=True,
+                                proxy=self.proxy,
+                                proxy_auth=self.proxy_auth)
 
     async def start(self, *, reconnect: bool = True) -> None:
         from services.servicebus import ServiceBus
@@ -130,14 +157,15 @@ class BotService(Service):
     async def alert(self, title: str, message: str, server: Optional[Server] = None,
                     node: Optional[Node] = None) -> None:
         mentions = ''.join([self.bot.get_role(role).mention for role in self.bot.roles['Alert'] if role is not None])
-        embed, file = utils.create_warning_embed(title=title, text=utils.escape_string(message))
+        embed = utils.create_warning_embed(title=title, text=utils.escape_string(message))
         if not server and node:
             try:
                 server = next(server for server in self.bot.servers.values() if server.node.name == node.name)
             except StopIteration:
                 server = None
-        if server:
-            await self.bot.get_admin_channel(server).send(content=mentions, embed=embed, file=file)
+        admin_channel = self.bot.get_admin_channel(server)
+        if admin_channel:
+            await admin_channel.send(content=mentions, embed=embed)
 
     async def install_fonts(self):
         font_dir = Path('fonts')
@@ -158,14 +186,17 @@ class BotService(Service):
         for f in font_manager.findSystemFonts('fonts'):
             font_manager.fontManager.addfont(f)
 
-    async def send_message(self, channel: int, content: Optional[str] = None, server: Optional[Server] = None,
-                           filename: Optional[str] = None, embed: Optional[dict] = None,
-                           mention: Optional[list] = None):
+    async def send_message(self, channel: Optional[int] = -1, content: Optional[str] = None,
+                           server: Optional[Server] = None, filename: Optional[str] = None,
+                           embed: Optional[dict] = None, mention: Optional[list] = None):
         _channel = self.bot.get_channel(channel)
         if not _channel:
-            if channel != -1:
+            if channel and channel != -1:
                 raise ValueError(f"Channel {channel} not found!")
-            return
+            elif self.bot.audit_channel:
+                _channel = self.bot.audit_channel
+            else:
+                return
         _embed = discord.Embed.from_dict(embed) if embed else MISSING
         if filename:
             data = await server.node.read_file(filename)
@@ -173,10 +204,8 @@ class BotService(Service):
         else:
             file = MISSING
         if mention:
-            _mention = ""
-            for role in mention:
-                _mention += self.bot.get_role(role).mention
-            content = _mention + (content or '')
+            _mention = "".join([self.bot.get_role(role).mention for role in mention])
+            content = _mention + (content or "")
         await _channel.send(content=content, file=file, embed=_embed)
 
     async def audit(self, message, user: Optional[Union[discord.Member, str]] = None,

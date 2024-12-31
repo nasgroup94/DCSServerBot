@@ -7,7 +7,7 @@ from core.listener import EventListener
 from core.services.registry import ServiceRegistry
 from datetime import datetime, timezone
 from discord.ext import commands
-from typing import Optional, Union, TYPE_CHECKING, Any, Iterable
+from typing import Optional, Union, TYPE_CHECKING, Any, Iterable, cast
 
 if TYPE_CHECKING:
     from core import Server, NodeImpl
@@ -79,9 +79,8 @@ class DCSServerBot(commands.Bot):
             if not await self.load_plugin(plugin.lower()):
                 self.log.info(f'  => {plugin.title()} NOT loaded.')
         # cleanup remote servers (if any)
-        for key, value in self.bus.servers.items():
-            if value.is_remote:
-                del self.bus.servers[key]
+        for key in [key for key, value in self.bus.servers.items() if value.is_remote]:
+            self.bus.servers.pop(key)
 
     async def load_plugin(self, plugin: str) -> bool:
         try:
@@ -181,7 +180,7 @@ class DCSServerBot(commands.Bot):
 
     def check_channels(self, server: "Server"):
         channels = ['status', 'chat']
-        if not self.locals.get('admin_channel'):
+        if not self.locals.get('channels', {}).get('admin'):
             channels.append('admin')
         if server.locals.get('coalitions'):
             channels.extend(['red', 'blue'])
@@ -211,8 +210,9 @@ class DCSServerBot(commands.Bot):
                 for role in ['Admin', 'DCS Admin', 'Alert', 'DCS', 'GameMaster']:
                     roles |= set(self.roles[role])
                 self.check_roles(roles)
-                if self.locals.get('admin_channel'):
-                    self.check_channel(int(self.locals['admin_channel']))
+                admin_channel = self.locals.get('channels', {}).get('admin')
+                if admin_channel:
+                    self.check_channel(int(admin_channel))
                 for server in self.servers.values():
                     if server.locals.get('coalitions'):
                         roles.clear()
@@ -283,6 +283,8 @@ class DCSServerBot(commands.Bot):
             await interaction.followup.send('A timeout occurred. Is the DCS server running?', ephemeral=True)
         elif isinstance(error, discord.app_commands.TransformerError):
             await interaction.followup.send(error, ephemeral=True)
+        elif isinstance(error, discord.app_commands.AppCommandError):
+            await interaction.followup.send(str(error))
         else:
             self.log.exception(error)
             await interaction.followup.send("An unknown exception occurred.", ephemeral=True)
@@ -300,8 +302,9 @@ class DCSServerBot(commands.Bot):
     async def audit(self, message, *, user: Optional[Union[discord.Member, str]] = None,
                     server: Optional["Server"] = None, **kwargs):
         if not self.audit_channel:
-            if 'audit_channel' in self.locals:
-                self.audit_channel = self.get_channel(int(self.locals['audit_channel']))
+            audit_channel = self.locals.get('channels', {}).get('audit')
+            if audit_channel:
+                self.audit_channel = self.get_channel(int(audit_channel))
         if self.audit_channel:
             if not user:
                 member = self.member
@@ -312,7 +315,10 @@ class DCSServerBot(commands.Bot):
             embed = discord.Embed(color=discord.Color.blue())
             if member:
                 embed.set_author(name=member.name, icon_url=member.avatar)
-                embed.set_thumbnail(url=member.avatar)
+                if 'error' in kwargs:
+                    embed.set_thumbnail(url="https://github.com/Special-K-s-Flightsim-Bots/DCSServerBot/blob/master/images/warning.png?raw=true")
+                else:
+                    embed.set_thumbnail(url=member.avatar)
                 if member != self.member:
                     embed.description = f'<@{member.id}> ' + message
                 else:
@@ -338,7 +344,7 @@ class DCSServerBot(commands.Bot):
                       user if isinstance(user, str) else None))
 
     def get_admin_channel(self, server: "Server") -> discord.TextChannel:
-        admin_channel = self.locals.get('admin_channel')
+        admin_channel = self.locals.get('channels', {}).get('admin')
         if not admin_channel:
             admin_channel = int(server.channels.get(Channel.ADMIN, -1))
         return self.get_channel(admin_channel)
@@ -403,7 +409,7 @@ class DCSServerBot(commands.Bot):
     def get_server(self, ctx: Union[discord.Interaction, discord.Message, str], *,
                    admin_only: Optional[bool] = False) -> Optional["Server"]:
         if len(self.servers) == 1:
-            if admin_only and int(self.locals.get('admin_channel', 0)) == ctx.channel.id:
+            if admin_only and int(self.locals.get('channels', {}).get('admin', 0)) == ctx.channel.id:
                 return list(self.servers.values())[0]
             elif not admin_only:
                 return list(self.servers.values())[0]
@@ -451,7 +457,7 @@ class DCSServerBot(commands.Bot):
             async with self.apool.connection() as conn:
                 # check if we have a message persisted already
                 cursor = await conn.execute("""
-                    SELECT embed FROM message_persistence 
+                    SELECT embed, thread FROM message_persistence 
                     WHERE server_name = %s AND embed_name = %s
                 """, (server.name if server else 'Master', embed_name))
                 row = await cursor.fetchone()
@@ -459,11 +465,17 @@ class DCSServerBot(commands.Bot):
             message = None
             if row:
                 try:
-                    message = await channel.fetch_message(row[0])
-                    if not file:
-                        await message.edit(embed=embed)
+                    if channel.type == discord.ChannelType.forum:
+                        thread = cast(discord.ForumChannel, channel).get_thread(row[1])
+                        if thread:
+                            message = await thread.fetch_message(row[0])
                     else:
-                        await message.edit(embed=embed, attachments=[file])
+                        message = await channel.fetch_message(row[0])
+                    if message:
+                        if not file:
+                            await message.edit(embed=embed)
+                        else:
+                            await message.edit(embed=embed, attachments=[file])
                 except discord.errors.NotFound:
                     message = None
                 except discord.errors.DiscordException as ex:
@@ -473,12 +485,25 @@ class DCSServerBot(commands.Bot):
                     self.log.exception(ex)
                     return
             if not row or not message:
-                message = await channel.send(embed=embed, file=file)
+                if channel.type == discord.ChannelType.forum:
+                    for thread in channel.threads:
+                        if thread.name.startswith(server.name):
+                            message = await thread.send(embed=embed, file=file)
+                            break
+                    else:
+                        thread = await channel.create_thread(name=server.name, auto_archive_duration=10080,
+                                                             embed=embed, file=file)
+                        message = thread.message
+                        thread = thread.thread
+                else:
+                    message = await channel.send(embed=embed, file=file)
+                    thread = None
                 async with self.apool.connection() as conn:
                     async with conn.transaction():
                         await conn.execute("""
-                            INSERT INTO message_persistence (server_name, embed_name, embed) 
-                            VALUES (%s, %s, %s) 
+                            INSERT INTO message_persistence (server_name, embed_name, embed, thread) 
+                            VALUES (%s, %s, %s, %s) 
                             ON CONFLICT (server_name, embed_name) 
-                            DO UPDATE SET embed=excluded.embed
-                        """, (server.name if server else 'Master', embed_name, message.id))
+                            DO UPDATE SET embed=excluded.embed, thread=excluded.thread
+                        """, (server.name if server else 'Master', embed_name, message.id,
+                              thread.id if thread else None))

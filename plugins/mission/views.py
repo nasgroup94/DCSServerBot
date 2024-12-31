@@ -63,11 +63,14 @@ class ServerView(View):
         await interaction.response.defer()
         self.env.embed.set_footer(text="Loading mission, please wait ...")
         await interaction.edit_original_response(embed=self.env.embed)
-        await self.server.loadMission(int(interaction.data['values'][0]) + 1)
-        with suppress(TimeoutError, asyncio.TimeoutError):
-            await self.server.wait_for_status_change([Status.RUNNING], 2)
-        await self.render(interaction)
-        await interaction.edit_original_response(embed=self.env.embed, view=self)
+        if not await self.server.loadMission(int(interaction.data['values'][0]) + 1):
+            self.env.embed.set_footer(text="Mission loading failed.")
+            await interaction.edit_original_response(embed=self.env.embed)
+        else:
+            with suppress(TimeoutError, asyncio.TimeoutError):
+                await self.server.wait_for_status_change([Status.RUNNING], 2)
+            await self.render(interaction)
+            await interaction.edit_original_response(embed=self.env.embed, view=self)
 
     async def change_preset(self, interaction: discord.Interaction):
         pass
@@ -121,11 +124,14 @@ class ServerView(View):
 
 
 class PresetView(View):
-    def __init__(self, options: list[discord.SelectOption]):
+    def __init__(self, options: list[discord.SelectOption], multi: bool = True):
         super().__init__()
         select: Select = cast(Select, self.children[0])
         select.options = options
-        select.max_values = min(10, len(options))
+        if multi:
+            select.max_values = min(10, len(options))
+        else:
+            select.max_values = 1
         self.result = None
 
     @discord.ui.select(placeholder="Select the preset(s) you want to apply")
@@ -205,7 +211,8 @@ class InfoView(View):
         button.callback = self.on_cancel
         self.add_item(button)
         report = Report(self.bot, 'mission', 'info.json')
-        env = await report.render(member=self.member, player=self.player, banned=banned, watchlist=watchlist)
+        env = await report.render(member=self.member, ucid=self.ucid, player=self.player, banned=banned,
+                                  watchlist=watchlist)
         return env.embed
 
     async def is_banned(self) -> bool:

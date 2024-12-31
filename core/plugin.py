@@ -8,6 +8,7 @@ import logging
 import os
 import psycopg
 import shutil
+import sqlparse
 import sys
 
 from copy import deepcopy
@@ -18,7 +19,7 @@ from discord.app_commands import locale_str
 from discord.app_commands.commands import CommandCallback, GroupT, P, T
 from discord.ext import commands, tasks
 from discord.utils import MISSING, _shorten
-from packaging import version
+from packaging.version import parse
 from pathlib import Path
 from typing import Type, Optional, TYPE_CHECKING, Union, Any, Dict, Callable, List
 
@@ -138,7 +139,8 @@ class Command(app_commands.Command):
             del self._params['node']
         # remove server parameter from slash commands if only one server is there
         num_servers = len(bot.servers)
-        if 'server' in self._params and ((num_servers == 1 and nodes == 1) or not bot.locals.get('admin_channel')):
+        if ('server' in self._params and
+                ((num_servers == 1 and nodes == 1) or not bot.locals.get('channels', {}).get('admin'))):
             del self._params['server']
 
     async def _do_call(self, interaction: Interaction, params: Dict[str, Any]) -> T:
@@ -337,7 +339,11 @@ class Plugin(commands.Cog):
                         tables_file = f'./plugins/{self.plugin_name}/db/tables.sql'
                         if os.path.exists(tables_file):
                             with open(tables_file, mode='r') as tables_sql:
-                                for query in tables_sql.readlines():
+                                for query in [
+                                    stmt.strip()
+                                    for stmt in sqlparse.split(tables_sql.read(), encoding='utf-8')
+                                    if stmt.strip()
+                                ]:
                                     self.log.debug(query.rstrip())
                                     await cursor.execute(query.rstrip())
                         await cursor.execute("""
@@ -351,7 +357,7 @@ class Plugin(commands.Cog):
                         # old variant, to be migrated
                         if installed.startswith('v'):
                             installed = installed[1:]
-                        while version.parse(installed) < version.parse(self.plugin_version):
+                        while parse(installed) < parse(self.plugin_version):
                             updates_file = f'./plugins/{self.plugin_name}/db/update_v{installed}.sql'
                             if os.path.exists(updates_file):
                                 with open(updates_file, mode='r') as updates_sql:

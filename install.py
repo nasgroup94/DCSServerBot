@@ -197,10 +197,13 @@ class Install:
                                             "central admin channel for all servers.\n"
                                             "If you want to use a central one, please provide the ID (optional)"),
                                           default=-1)
+            channels = {}
             if audit_channel and audit_channel != -1:
-                bot['audit_channel'] = audit_channel
+                channels['audit'] = audit_channel
             if admin_channel and admin_channel != -1:
-                bot['admin_channel'] = admin_channel
+                channels['admin'] = admin_channel
+            if channels:
+                bot['channels'] = channels
             return main, bot
 
         def configure_no_discord() -> tuple[dict, dict]:
@@ -269,7 +272,7 @@ For a successful installation, you need to fulfill the following prerequisites:
         major_version = int(platform.python_version_tuple()[1])
         if major_version <= 8:
             print(f"""
-[red]!!! Your Python 3.{major_version} installation is not supported, you might face issues. Please use 3.9 - 3.12 !!![/]
+[red]!!! Your Python 3.{major_version} installation is not supported, you might face issues. Please use 3.9 or higher!!![/]
             """)
         print("""
 [bright_blue]Hello! Thank you for choosing DCSServerBot.[/]
@@ -411,7 +414,7 @@ If you need any further assistance, please visit the support discord, listed in 
                         "Status Channel": _("To display the mission and player status."),
                         "Chat Channel": _("[bright_black]Optional:[/]: An in-game chat replication.")
                     }
-                    if 'admin_channel' not in bot:
+                    if not bot.get('channels', {}).get('admin'):
                         channels['Admin Channel'] = _("For admin commands.")
                     print(_("DCSServerBot uses up to {} channels per supported server:").format(len(channels)))
                     print(channels)
@@ -436,7 +439,7 @@ If you need any further assistance, please visit the support discord, listed in 
                                                   default=-1)
                         }
                     }
-                    if 'admin_channel' not in bot:
+                    if not bot.get('channels', {}).get('admin'):
                         servers[name]['channels']['admin'] = IntPrompt.ask(
                             _("Please enter the ID of your [bold]Admin Channel[/]"))
                 else:

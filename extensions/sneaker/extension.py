@@ -99,7 +99,6 @@ class Sneaker(Extension):
     async def startup(self) -> bool:
         global process, servers, lock
 
-        await super().startup()
         if 'Tacview' not in self.server.options['plugins']:
             self.log.warning('Sneaker needs Tacview to be enabled in your server!')
             return False
@@ -117,7 +116,7 @@ class Sneaker(Extension):
                     process = psutil.Process(p.pid)
                     atexit.register(self.terminate)
             servers.add(self.server.name)
-            return True
+            return await super().startup()
         except Exception as ex:
             self.log.error(f"Error during launch of {self.config['cmd']}: {str(ex)}")
             return False
@@ -137,22 +136,26 @@ class Sneaker(Extension):
     def shutdown(self) -> bool:
         global process, servers
 
-        servers.remove(self.server.name)
-        if not servers:
-            super().shutdown()
-            return self.terminate()
-        elif 'config' not in self.config:
-            if self.terminate():
-                self.create_config()
-                try:
-                    p = self._run_subprocess(os.path.join(self.node.config_dir, 'sneaker.json'))
-                    process = psutil.Process(p.pid)
-                except Exception as ex:
-                    self.log.error(f"Error during launch of {self.config['cmd']}: {str(ex)}")
+        try:
+            servers.remove(self.server.name)
+            if not servers:
+                super().shutdown()
+                return self.terminate()
+            elif 'config' not in self.config:
+                if self.terminate():
+                    self.create_config()
+                    try:
+                        p = self._run_subprocess(os.path.join(self.node.config_dir, 'sneaker.json'))
+                        process = psutil.Process(p.pid)
+                    except Exception as ex:
+                        self.log.error(f"Error during launch of {self.config['cmd']}: {str(ex)}")
+                        return False
+                else:
                     return False
-            else:
-                return False
-        return True
+            return True
+        except Exception as ex:
+            self.log.exception(ex)
+            return False
 
     def is_running(self) -> bool:
         global process, servers

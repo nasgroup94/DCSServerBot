@@ -37,18 +37,20 @@ class Autoexec:
                     value = self.parse(match.group('value').strip())
                     if '.' in key:
                         keys = key.split('.')
-                        if keys[0] not in mydict or not isinstance(keys[0], dict):
-                            mydict[keys[0]] = dict()
+                        if keys[0] not in mydict or not isinstance(mydict[keys[0]], dict):
+                            mydict[keys[0]] = {}
                         if len(keys) == 3:
                             if keys[1] not in mydict[keys[0]]:
-                                mydict[keys[0]][keys[1]] = dict()
+                                mydict[keys[0]][keys[1]] = {}
                             mydict[keys[0]][keys[1]][keys[2]] = value
                         else:
                             mydict[keys[0]][keys[1]] = value
                     else:
                         mydict[key] = value
                 elif line.startswith('log'):
-                    mydict['log'] = line[4:]
+                    if 'log' not in mydict:
+                        mydict['log'] = []
+                    mydict['log'].append(line[4:])
                 elif line.startswith('table'):
                     if 'table' not in mydict:
                         mydict['table'] = []
@@ -102,7 +104,8 @@ class Autoexec:
         with open(outfile, mode='w', encoding='utf-8') as outcfg:
             for key, value in self.values.items():
                 if key == 'log':
-                    outcfg.write(f"{key}.{value}\n")
+                    for log in value:
+                        outcfg.write(f"{key}.{log}\n")
                     continue
                 elif key == 'net':
                     outcfg.write('if not net then net = {} end\n')

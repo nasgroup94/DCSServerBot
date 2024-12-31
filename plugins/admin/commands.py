@@ -1,3 +1,4 @@
+import aiofiles
 import asyncio
 import discord
 import os
@@ -5,14 +6,14 @@ import psycopg
 import shutil
 
 from core import utils, Plugin, Server, command, Node, UploadStatus, Group, Instance, Status, PlayerType, \
-    PaginationReport, get_translation, TEventListener
+    PaginationReport, get_translation, TEventListener, DISCORD_FILE_SIZE_LIMIT
 from discord import app_commands
-from discord.app_commands import Range
 from discord.ext import commands, tasks
 from discord.ui import TextInput, Modal
 from functools import partial
 from io import BytesIO
 from services.bot import DCSServerBot
+from services.scheduler.actions import purge_channel
 from typing import Optional, Union, Literal, Type
 from zipfile import ZipFile, ZIP_DEFLATED
 
@@ -22,7 +23,6 @@ from ..scheduler.views import ConfigView
 # ruamel YAML support
 from ruamel.yaml import YAML
 yaml = YAML()
-
 
 _ = get_translation(__name__.split('.')[1])
 
@@ -104,10 +104,14 @@ async def file_autocomplete(interaction: discord.Interaction, current: str) -> l
             config = next(x for x in config['downloads'] if x['label'] == label)
         except StopIteration:
             return []
+        base_dir = config['directory'].format(server=server)
+        exp_base, file_list = await server.node.list_directory(
+                base_dir, pattern=config['pattern'], traverse=True, ignore=['.dcssb']
+            )
         choices: list[app_commands.Choice[str]] = [
-            app_commands.Choice(name=os.path.basename(x), value=os.path.basename(x))
-            for x in await server.node.list_directory(config['directory'].format(server=server), config['pattern'])
-            if not current or current.casefold() in x.casefold()
+            app_commands.Choice(name=os.path.relpath(x, exp_base), value=os.path.relpath(x, exp_base))
+            for x in file_list
+            if not current or current.casefold() in os.path.relpath(x, base_dir).casefold()
         ]
         return choices[:25]
     except Exception as ex:
@@ -275,7 +279,8 @@ class Admin(Plugin):
     @app_commands.describe(warn_time=_("Time in seconds to warn users before shutdown"))
     @app_commands.autocomplete(branch=get_branches)
     async def update(self, interaction: discord.Interaction,
-                     node: app_commands.Transform[Node, utils.NodeTransformer], warn_time: Range[int, 0] = 60,
+                     node: app_commands.Transform[Node, utils.NodeTransformer],
+                     warn_time: app_commands.Range[int, 0] = 60,
                      branch: Optional[str] = None, force: Optional[bool] = False):
         ephemeral = utils.get_ephemeral(interaction)
         # noinspection PyUnresolvedReferences
@@ -322,6 +327,15 @@ class Admin(Plugin):
                                          ).format(version=new_version, branch=branch, name=node.name))
                 await self.bot.audit(f"updated DCS from {old_version} to {new_version} on node {node.name}.",
                                      user=interaction.user)
+            elif rc in [2, 112]:
+                await msg.edit(
+                    content=_("DCS World could not be updated on node {name} due to missing disk space!").format(
+                        name=node.name))
+            elif rc in [3, 350]:
+                branch, new_version = await node.get_dcs_branch_and_version()
+                await msg.edit(content=_("DCS World updated to version {version}@{branch} on node {name}.\n"
+                                         "The updater has requested a **reboot** of the system!").format(
+                    version=new_version, branch=branch, name=node.name))
             else:
                 await msg.edit(
                     content=_("Error while updating DCS on node {name}, code={rc}").format(name=node.name, rc=rc))
@@ -368,6 +382,23 @@ class Admin(Plugin):
         await interaction.followup.send(
             _("Module {module} uninstalled on node {node}.").format(module=module, node=node.name), ephemeral=ephemeral)
 
+    @dcs.command(name='info', description=_('Info about your DCS installation'))
+    @app_commands.guild_only()
+    @utils.app_has_role('DCS Admin')
+    async def info(self, interaction: discord.Interaction,
+                   node: app_commands.Transform[Node, utils.NodeTransformer]):
+        ephemeral = utils.get_ephemeral(interaction)
+        # noinspection PyUnresolvedReferences
+        await interaction.response.defer(ephemeral=ephemeral)
+        modules = await node.get_installed_modules()
+        if not modules:
+            await interaction.followup.send(_("There are no modules installed on this server."), ephemeral=ephemeral)
+            return
+        embed = discord.Embed(color=discord.Color.blue())
+        embed.description = _("Installed modules on node {}").format(node.name)
+        embed.add_field(name=_("Module"), value='\n'.join([f'- {x}' for x in modules]))
+        await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+
     @command(description=_('Download files from your server'))
     @app_commands.guild_only()
     @utils.app_has_role('DCS Admin')
@@ -391,7 +422,7 @@ class Admin(Plugin):
         if target:
             target = target.format(server=server)
         if not filename.endswith('.zip') and not filename.endswith('.miz') and not filename.endswith('.acmi') and \
-                len(file) >= 25 * 1024 * 1024:
+                len(file) >= DISCORD_FILE_SIZE_LIMIT:
             zip_buffer = BytesIO()
             with ZipFile(zip_buffer, "a", ZIP_DEFLATED, False) as zip_file:
                 zip_file.writestr(filename, file)
@@ -425,8 +456,8 @@ class Admin(Plugin):
             else:
                 await interaction.followup.send(_('Here is your file:'), ephemeral=ephemeral)
         else:
-            with open(os.path.expandvars(target), mode='wb') as outfile:
-                outfile.write(file)
+            async with aiofiles.open(os.path.join(os.path.expandvars(target), filename), mode='wb') as outfile:
+                await outfile.write(file)
             await interaction.followup.send(_('File copied to the specified location.'), ephemeral=ephemeral)
         await self.bot.audit(f"downloaded {filename}", user=interaction.user, server=server)
 
@@ -526,6 +557,24 @@ class Admin(Plugin):
                         await interaction.followup.send(_("All data older than {} days pruned.").format(days),
                                                         ephemeral=ephemeral)
         await self.bot.audit(f'pruned the database', user=interaction.user)
+
+    @command(name='clear', description=_('Clear Discord messages'))
+    @app_commands.guild_only()
+    @utils.app_has_role('Admin')
+    @app_commands.describe(older_than=_('Delete messages older than x days (0 = all)'))
+    @app_commands.describe(ignore=_('Messages from this member will be ignored'))
+    async def clear(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None,
+                    older_than: Optional[int] = None, ignore: Optional[discord.Member] = None,
+                    after_id: Optional[str] = None, before_id: Optional[str] = None):
+        if not channel:
+            channel = interaction.channel
+        # noinspection PyUnresolvedReferences
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        msg = await interaction.followup.send(_("Deleting messages ..."))
+        await purge_channel(node=self.node, channel=channel.id, older_than=older_than,
+                            ignore=ignore.id if ignore else None, after_id=int(after_id) if after_id else None,
+                            before_id=int(before_id) if before_id else None)
+        await msg.edit(content=_("All messages deleted."))
 
     node_group = Group(name="node", description=_("Commands to manage your nodes"))
 
@@ -791,7 +840,7 @@ class Admin(Plugin):
                         "chat": server.locals.get('channels', {}).get('chat', -1)
                     }
                 }
-                if not self.bot.locals.get('admin_channel'):
+                if not self.bot.locals.get('channels', {}).get('admin'):
                     config[server.name]['channels']['admin'] = server.locals.get('channels', {}).get('admin', -1)
                 with open(config_file, mode='w', encoding='utf-8') as outfile:
                     yaml.dump(config, outfile)
@@ -897,21 +946,21 @@ Please make sure you forward the following ports:
         ctx = await self.bot.get_context(message)
         if not server:
             # check if there is a central admin channel configured
-            if self.bot.locals.get('admin_channel', 0) == message.channel.id:
-                try:
-                    server = await utils.server_selection(
-                        self.bus, ctx, title=_("To which server do you want to upload this configuration to?"))
-                    if not server:
-                        await ctx.send(_('Aborted.'))
-                        return
-                except Exception as ex:
-                    self.log.exception(ex)
+            admin_channel = self.bot.locals.get('channels', {}).get('admin')
+            if not admin_channel or admin_channel != message.channel.id:
+                return
+            try:
+                server = await utils.server_selection(
+                    self.bus, ctx, title=_("To which server do you want to upload this configuration to?"))
+                if not server:
+                    await ctx.send(_('Aborted.'))
                     return
-            else:
+            except Exception as ex:
+                self.log.exception(ex)
                 return
         att = message.attachments[0]
         name = att.filename[:-5]
-        if name in ['main', 'nodes', 'presets', 'servers']:
+        if name in ['main', 'nodes', 'servers'] or name.startswith('presets'):
             target_path = self.node.config_dir
             plugin = False
         elif name in ['backup', 'bot']:

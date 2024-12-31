@@ -10,9 +10,10 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from copy import deepcopy
 from core import Server, Mission, Node, DataObjectFactory, Status, Autoexec, ServerProxy, utils, PubSub, PerformanceLog, \
-    ThreadSafeDict
+    ThreadSafeDict, Instance
 from core.services.base import Service
 from core.services.registry import ServiceRegistry
+from core.data.impl.instanceimpl import InstanceImpl
 from core.data.impl.serverimpl import ServerImpl
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -133,6 +134,7 @@ class ServiceBus(Service):
                     "node": self.node.name
                 }
             })
+            self.log.debug('- Unregistered from Master node.')
         await self.intercom_channel.close()
         await super().stop()
 
@@ -156,7 +158,6 @@ class ServiceBus(Service):
         self.log.debug(f'  - EventListener {type(listener).__name__} unregistered.')
 
     async def init_servers(self):
-        self.log.debug("- init_servers()")
         for instance in self.node.instances:
             try:
                 async with self.apool.connection() as conn:
@@ -270,13 +271,12 @@ class ServiceBus(Service):
         if not node:
             return
         self.log.info(f"- Unregistering remote node {node.name} and all its servers ...")
-        servers_to_remove = []
-        for server in (x for x in self.servers.values() if x.is_remote and x.node == node):
-            servers_to_remove.append(server.name)
-        for server_name in servers_to_remove:
-            self.log.info(f"  => Remote DCS-server \"{server_name}\" unregistered.")
-            self.servers[server_name].status = Status.UNREGISTERED
-            del self.servers[server_name]
+        for server_name, server in list(self.servers.items()):
+            if server.is_remote and server.node == node:
+                self.log.info(f"  => Remote DCS-server \"{server_name}\" unregistered.")
+                server.status = Status.UNREGISTERED
+                del self.servers[server_name]
+        # we do not delete the node but set it to None, to reactivate it later
         self.node.all_nodes[node.name] = None
         self.log.info(f"- Remote node {node.name} unregistered.")
 
@@ -297,7 +297,7 @@ class ServiceBus(Service):
             server.process = utils.find_process("DCS_server.exe|DCS.exe", server.instance.name)
             if not server.process:
                 self.log.warning("Could not find active DCS process. Please check, if you have started DCS with -w!")
-        server.dcs_version = data['dcs_version']
+        server.dcs_version = self.node.dcs_version or data['dcs_version']
         # if we are an agent, initialize the server
         if not self.master:
             if 'current_mission' in data:
@@ -310,25 +310,25 @@ class ServiceBus(Service):
         # validate server ports
         dcs_ports: dict[int, str] = dict()
         webgui_ports: dict[int, str] = dict()
-        for server in self.servers.values():
+        for s in self.servers.values():
             # only check ports of local servers
-            if server.is_remote or server.status == Status.SHUTDOWN:
+            if s.is_remote or s.status == Status.SHUTDOWN:
                 continue
-            dcs_port = int(server.settings.get('port', 10308))
+            dcs_port = int(s.settings.get('port', 10308))
             if dcs_port in dcs_ports:
-                self.log.error(f'Server "{server.name}" shares its DCS port with server '
+                self.log.error(f'Server "{s.name}" shares its DCS port with server '
                                f'"{dcs_ports[dcs_port]}"! Registration aborted.')
                 return False
             else:
-                dcs_ports[dcs_port] = server.name
-            autoexec = Autoexec(server.instance)
+                dcs_ports[dcs_port] = s.name
+            autoexec = Autoexec(cast(InstanceImpl, s.instance))
             webgui_port = autoexec.webgui_port or 8088
             if webgui_port in webgui_ports:
-                self.log.error(f'Server "{server.name}" shares its webgui_port with server '
+                self.log.error(f'Server "{s.name}" shares its webgui_port with server '
                                f'"{webgui_ports[webgui_port]}"! Registration aborted.')
                 return False
             else:
-                webgui_ports[webgui_port] = server.name
+                webgui_ports[webgui_port] = s.name
         # check for DSMC
         if server.status == Status.RUNNING and data.get('dsmc_enabled', False) and 'DSMC' not in server.extensions:
             self.log.warning("  => DSMC is enabled for this server but DSMC extension is not loaded!")
@@ -349,14 +349,14 @@ class ServiceBus(Service):
                             asyncio.run(server.rename(server_name))
                         else:
                             self.log.warning(f'Registration of server "{server_name}" aborted due to conflict.')
-                            del self.servers[server_name]
+                            self.servers.pop(server_name, None)
                             return False
         return True
 
     def rename_server(self, server: Server, new_name: str):
         self.servers[new_name] = server
         if server.name in self.servers:
-            del self.servers[server.name]
+            self.servers.pop(server.name, None)
         if server.name in self.udp_server.message_queue:
             self.udp_server.message_queue[server.name].put({})
             self.udp_server.message_queue[new_name] = Queue()
@@ -554,6 +554,8 @@ class ServiceBus(Service):
             if data.get('channel', '').startswith('sync-'):
                 if isinstance(rc, Enum):
                     rc = rc.value
+                elif isinstance(rc, (Node, Server, Instance)):
+                    rc = rc.name
                 await self.send_to_node({
                     "command": "rpc",
                     "method": data['method'],
@@ -563,6 +565,8 @@ class ServiceBus(Service):
         except Exception as ex:
             if isinstance(ex, TimeoutError) or isinstance(ex, asyncio.TimeoutError):
                 self.log.warning(f"Timeout error during an RPC call: {data['method']}!", exc_info=True)
+            else:
+                self.log.exception(ex)
             if data.get('channel', '').startswith('sync-'):
                 await self.send_to_node({
                     "command": "rpc",
@@ -663,7 +667,11 @@ class ServiceBus(Service):
                 if not derived.request or not derived.request[0]:
                     self.log.warning(f"Empty request received on port {self.node.listen_port} - ignoring.")
                     return
-                data: dict = json.loads(derived.request[0].strip())
+                try:
+                    data: dict = json.loads(derived.request[0].strip())
+                except json.JSONDecodeError:
+                    self.log.warning(f"Invalid request received on port {self.node.listen_port} - ignoring.")
+                    return
                 # ignore messages not containing server names
                 if 'server_name' not in data:
                     self.log.warning('Message without server_name received: {}'.format(data))
@@ -749,7 +757,7 @@ class ServiceBus(Service):
                             data = derived.message_queue[server.name].get()
                 finally:
                     self.log.debug(f"Listener for server {server_name} stopped.")
-                    del derived.message_queue[server_name]
+                    derived.message_queue.pop(server_name, None)
 
             def shutdown(derived):
                 super().shutdown()

@@ -11,16 +11,19 @@ import platform
 import psycopg
 import re
 import shutil
+import sqlparse
 import ssl
 import subprocess
 import sys
 
 from collections import defaultdict
 from contextlib import closing
-from core import utils, Status, Coalition
+from core import utils, Status
 from core.const import SAVED_GAMES
+from core.data.maintenance import ServerMaintenanceManager
 from core.translations import get_translation
 from discord.ext import tasks
+from migrate import migrate
 from packaging import version
 from pathlib import Path
 from psycopg.errors import UndefinedTable, InFailedSqlTransaction, NotNullViolation, OperationalError
@@ -39,7 +42,7 @@ from core.data.impl.instanceimpl import InstanceImpl
 from core.data.server import Server
 from core.data.impl.serverimpl import ServerImpl
 from core.services.registry import ServiceRegistry
-from core.utils.helper import SettingsDict, YAMLError
+from core.utils.helper import SettingsDict, YAMLError, async_cache
 
 # ruamel YAML support
 from pykwalify.errors import SchemaError
@@ -97,7 +100,7 @@ class NodeImpl(Node):
         self.locals = self.read_locals()
         if sys.platform == 'win32':
             from os import system
-            system(f"title DCSServerBot v{self.bot_version}.{self.sub_version}")
+            system(f"title DCSServerBot v{self.bot_version}.{self.sub_version} - {self.node.name}")
         self.log.info(f'DCSServerBot v{self.bot_version}.{self.sub_version} starting up ...')
         self.log.info(f'- Python version {platform.python_version()} detected.')
         self.install_plugins()
@@ -182,9 +185,9 @@ class NodeImpl(Node):
 
     def unregister_callback(self, what: str, name: str):
         if what == 'before_dcs_update':
-            del self.before_update[name]
+            self.before_update.pop(name, None)
         else:
-            del self.after_update[name]
+            self.after_update.pop(name, None)
 
     async def shutdown(self, rc: int = -2):
         self.rc = rc
@@ -261,7 +264,7 @@ class NodeImpl(Node):
         max_idle = self.config.get("database", self.locals.get('database')).get('max_idle', 10 * 60.0)
         timeout = 60.0 if self.locals.get('slow_system', False) else 30.0
         self.log.debug("- Initializing database pools ...")
-        db_pool = ConnectionPool(url, min_size=2, max_size=4, check=ConnectionPool.check_connection, max_idle=max_idle,
+        db_pool = ConnectionPool(url, min_size=2, max_size=10, check=ConnectionPool.check_connection, max_idle=max_idle,
                                  timeout=timeout, open=False)
         db_apool = AsyncConnectionPool(conninfo=url, min_size=pool_min, max_size=pool_max,
                                        check=AsyncConnectionPool.check_connection, max_idle=max_idle, timeout=timeout,
@@ -311,12 +314,16 @@ class NodeImpl(Node):
                 tables = [x[0] async for x in cursor]
                 # initial setup
                 if len(tables) == 0:
-                    self.log.info('Creating Database ...')
+                    self.log.info('- Creating Database ...')
                     with open(os.path.join('sql', 'tables.sql'), mode='r') as tables_sql:
-                        for query in tables_sql.readlines():
+                        for query in [
+                            stmt.strip()
+                            for stmt in sqlparse.split(tables_sql.read(), encoding='utf-8')
+                            if stmt.strip()
+                        ]:
                             self.log.debug(query.rstrip())
                             await cursor.execute(query.rstrip())
-                    self.log.info('Database created.')
+                    self.log.info('- Database created.')
                 else:
                     # version table missing (DB version <= 1.4)
                     if 'version' not in tables:
@@ -327,12 +334,17 @@ class NodeImpl(Node):
                     while os.path.exists(f'sql/update_{self.db_version}.sql'):
                         old_version = self.db_version
                         with open(os.path.join('sql', f'update_{self.db_version}.sql'), mode='r') as tables_sql:
-                            for query in tables_sql.readlines():
+                            for query in [
+                                stmt.strip()
+                                for stmt in sqlparse.split(tables_sql.read(), encoding='utf-8')
+                                if stmt.strip()
+                            ]:
                                 self.log.debug(query.rstrip())
                                 await conn.execute(query.rstrip())
                         cursor = await conn.execute('SELECT version FROM version')
                         self.db_version = (await cursor.fetchone())[0]
-                        self.log.info(f'Database upgraded from {old_version} to {self.db_version}.')
+                        await asyncio.to_thread(migrate, self.node, old_version, self.db_version)
+                        self.log.info(f'- Database upgraded from {old_version} to {self.db_version}.')
 
     def install_plugins(self):
         for file in Path('plugins').glob('*.zip'):
@@ -414,30 +426,16 @@ class NodeImpl(Node):
 
     async def get_dcs_branch_and_version(self) -> tuple[str, str]:
         if not self.dcs_branch or not self.dcs_version:
-            with open(os.path.join(self.installation, 'autoupdate.cfg'), mode='r', encoding='utf8') as cfg:
-                data = json.load(cfg)
+            async with aiofiles.open(os.path.join(self.installation, 'autoupdate.cfg'), mode='r', encoding='utf8') as cfg:
+                data = json.loads(await cfg.read())
             self.dcs_branch = data.get('branch', 'release')
             self.dcs_version = data['version']
             if "openbeta" in self.dcs_branch:
                 self.log.debug("You're running DCS OpenBeta, which is discontinued. "
-                               "Use /dcs update, if you want to switch to the release branch.")
+                               "Use /dcs update if you want to switch to the release branch.")
         return self.dcs_branch, self.dcs_version
 
     async def update(self, warn_times: list[int], branch: Optional[str] = None) -> int:
-        from services.servicebus import ServiceBus
-
-        async def shutdown_with_warning(server: Server):
-            if server.is_populated():
-                shutdown_in = max(warn_times) if len(warn_times) else 0
-                while shutdown_in > 0:
-                    for warn_time in warn_times:
-                        if warn_time == shutdown_in:
-                            await server.sendPopupMessage(
-                                Coalition.ALL,
-                                _('Server is going down for a DCS update in {}!').format(utils.format_time(warn_time)))
-                    await asyncio.sleep(1)
-                    shutdown_in -= 1
-            await server.shutdown(force=True)
 
         async def do_update(branch: Optional[str] = None) -> int:
             # disable any popup on the remote machine
@@ -476,48 +474,33 @@ class NodeImpl(Node):
             return rc
 
         self.update_pending = True
-        to_start = []
-        in_maintenance = []
-        tasks = []
-        bus = ServiceRegistry.get(ServiceBus)
-        for server in [x for x in bus.servers.values() if not x.is_remote]:
-            if server.maintenance:
-                in_maintenance.append(server)
-            else:
-                server.maintenance = True
-            if server.status not in [Status.UNREGISTERED, Status.SHUTDOWN]:
-                to_start.append(server)
-                tasks.append(asyncio.create_task(shutdown_with_warning(server)))
-        # wait for DCS servers to shut down
-        if tasks:
-            await asyncio.gather(*tasks)
-        self.log.info(f"Updating {self.installation} ...")
-        # call before update hooks
-        for callback in self.before_update.values():
-            await callback()
-        rc = await do_update(branch)
-        if rc == 0:
-            self.dcs_branch = self.dcs_version = None
-            if self.locals['DCS'].get('desanitize', True):
-                if not self.locals['DCS'].get('cloud', False) or self.master:
-                    utils.desanitize(self)
-            # call after update hooks
-            for callback in self.after_update.values():
+        async with ServerMaintenanceManager(self.node, warn_times,
+                                            _('Server is going down for a DCS update in {}!')):
+            self.log.info(f"Updating {self.installation} ...")
+            # call before update hooks
+            for callback in self.before_update.values():
                 await callback()
-            self.log.info(f"{self.installation} updated to the latest version.")
-        for server in [x for x in bus.servers.values() if not x.is_remote]:
-            if server not in in_maintenance:
-                # let the scheduler do its job
-                server.maintenance = False
-            if server in to_start:
-                try:
-                    # the server was running before (being in maintenance mode), so start it again
-                    await server.startup()
-                except (TimeoutError, asyncio.TimeoutError):
-                    self.log.warning(f'Timeout while starting {server.display_name}, please check it manually!')
-        if rc == 0:
-            self.update_pending = False
-        return rc
+            old_branch, old_version = await self.get_dcs_branch_and_version()
+            rc = await do_update(branch)
+            if rc in [0, 350]:
+                self.dcs_branch = self.dcs_version = None
+                dcs_branch, dcs_version = await self.get_dcs_branch_and_version()
+                # if only the updater updated itself, run the update again
+                if old_branch == dcs_branch and old_version == dcs_version:
+                    self.log.info("dcs_updater.exe updated to the latest version, now updating DCS World ...")
+                    rc = await do_update(branch)
+                    self.dcs_branch = self.dcs_version = None
+                    if rc not in [0, 350]:
+                        return rc
+                if self.locals['DCS'].get('desanitize', True):
+                    if not self.locals['DCS'].get('cloud', False) or self.master:
+                        utils.desanitize(self)
+                # call after update hooks
+                for callback in self.after_update.values():
+                    await callback()
+                self.log.info(f"{self.installation} updated to version {dcs_version}.")
+                self.update_pending = False
+            return rc
 
     async def handle_module(self, what: str, module: str):
         if sys.platform == 'win32':
@@ -533,13 +516,16 @@ class NodeImpl(Node):
                 startupinfo=startupinfo
             )
 
-        await asyncio.to_thread(run_subprocess)
+        async with ServerMaintenanceManager(self.node, [120, 60, 10],
+                                            _('Server is going down to {what}'.format(what=what) + ' a module in {}!')):
+            await asyncio.to_thread(run_subprocess)
 
     async def get_installed_modules(self) -> list[str]:
         with open(os.path.join(self.installation, 'autoupdate.cfg'), mode='r', encoding='utf8') as cfg:
             data = json.load(cfg)
         return data['modules']
 
+    @async_cache
     async def get_available_modules(self) -> list[str]:
         licenses = {
             "CAUCASUS_terrain",
@@ -811,16 +797,26 @@ class NodeImpl(Node):
             raise TimeoutError()
 
     async def read_file(self, path: str) -> Union[bytes, int]:
+        async def _read_file(path: str):
+            if path.startswith('http'):
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(path) as response:
+                        if response.status == 200:
+                            return await response.read()
+                        else:
+                            raise FileNotFoundError(path)
+            else:
+                async with aiofiles.open(path, mode='rb') as file:
+                    return await file.read()
+
         path = os.path.expandvars(path)
         if self.node.master:
-            async with aiofiles.open(path, mode='rb') as file:
-                return await file.read()
+            return await _read_file(path)
         else:
             async with self.apool.connection() as conn:
                 async with conn.transaction():
-                    async with aiofiles.open(path, mode='rb') as file:
-                        await conn.execute("INSERT INTO files (guild_id, name, data) VALUES (%s, %s, %s)",
-                                           (self.guild_id, path, psycopg.Binary(await file.read())))
+                    await conn.execute("INSERT INTO files (guild_id, name, data) VALUES (%s, %s, %s)",
+                                       (self.guild_id, path, psycopg.Binary(await _read_file(path))))
                     cursor = await conn.execute("SELECT currval('files_id_seq')")
                     return (await cursor.fetchone())[0]
 
@@ -843,13 +839,32 @@ class NodeImpl(Node):
                     return UploadStatus.READ_ERROR
         return UploadStatus.OK
 
-    async def list_directory(self, path: str, pattern: str, order: Optional[SortOrder] = SortOrder.DATE) -> list[str]:
+    async def list_directory(self, path: str, *, pattern: Union[str, list[str]] = '*',
+                             order: SortOrder = SortOrder.DATE,
+                             is_dir: bool = False, ignore: list[str] = None, traverse: bool = False
+                             ) -> tuple[str, list[str]]:
         directory = Path(os.path.expandvars(path))
+        ignore = ignore or []
         ret = []
-        for file in sorted(directory.glob(pattern), key=os.path.getmtime if order == SortOrder.DATE else None,
-                           reverse=True):
-            ret.append(os.path.join(directory.__str__(), file.name))
-        return ret
+        sort_key = os.path.getmtime if order == SortOrder.DATE else str
+        if isinstance(pattern, str):
+            pattern = [pattern]
+
+        def filtered_files():
+            for pat in pattern:
+                for file in directory.rglob(pat) if traverse else directory.glob(pat):
+                    if file.name in ignore or os.path.basename(file.parent) in ignore:
+                        continue
+                    if (file.is_dir() and is_dir) or (not is_dir and not file.is_dir()):
+                        yield file
+
+        for file in sorted(filtered_files(), key=sort_key, reverse=sort_key != str):
+            ret.append(str(file))
+
+        return str(directory), ret
+
+    async def create_directory(self, path: str):
+        os.makedirs(path, exist_ok=True)
 
     async def remove_file(self, path: str):
         files = glob.glob(path)
@@ -887,7 +902,7 @@ class NodeImpl(Node):
             try:
                 branch, old_version = await self.get_dcs_branch_and_version()
                 new_version = await self.get_latest_version(branch)
-            except Exception:
+            except aiohttp.ClientError:
                 self.log.warning("Update check failed, possible server outage at ED.")
                 return
             if new_version and old_version != new_version:
@@ -932,13 +947,21 @@ class NodeImpl(Node):
                             "params": params
                         })
                 else:
+                    if rc in [2, 112]:
+                        message = f"DCS World could not be updated on node {self.name} due to missing disk space!"
+                    elif rc in [3, 350]:
+                        message = (f"DCS World has been updated to version {new_version} on node {self.name}.\n"
+                                   f"The updater has requested a **reboot** of the system!")
+                    else:
+                        message = f"DCS World could not be updated on node {self.name} due to an error ({rc})!"
+                    self.log.error(message)
                     await ServiceRegistry.get(ServiceBus).send_to_node({
                         "command": "rpc",
                         "service": BotService.__name__,
                         "method": "alert",
                         "params": {
                             "title": "DCS Update Issue",
-                            "message": f"DCS World could not be updated on node {self.name} due to an error ({rc})!"
+                            "message": message
                         }
                     })
         except aiohttp.ClientError as ex:
@@ -1012,7 +1035,7 @@ class NodeImpl(Node):
         config_file = os.path.join(self.config_dir, 'nodes.yaml')
         with open(config_file, mode='r', encoding='utf-8') as infile:
             config = yaml.load(infile)
-        del config[self.name]['instances'][instance.name]
+        config[self.name]['instances'].pop(instance.name, None)
         with open(config_file, mode='w', encoding='utf-8') as outfile:
             yaml.dump(config, outfile)
         if instance.server:

@@ -23,6 +23,8 @@ DEFAULT:
 DCS.release_server:                              
   schedule:                                       # Server "DCS.release_server" will run 24x7
     00-24: YYYYYYY
+  startup:
+    mission_id: 3                                 # Load mission #3 from the mission list on startup
 instance2:
   schedule:                                       # Server "instance2" will run every day from 0h-12h in the specified time zone
     timezone: Europe/Berlin                       # optional: timezone (default: local time)
@@ -76,6 +78,9 @@ mission:
 | __Examples:__<br/>Time between 12:30h and 18:00h => 12:30-18:00<br/>Time between 09:00h and 21:30h => 09-21:30<br/>Time between 21:00h and 03:00h => 21-03 (next day!)<br/>All day long (00:00h - 24:00h) => 00-24<br/> | __Examples:__<br/>YYYYYYY => every day<br/>YYYYYNN => weekdays only<br/>&nbsp;<br/>&nbsp;                                                                                                                                                                          |
 See the above examples for a better understanding on how it works.
 
+### Section "startup"
+Here you can provide a mission_id to be started on server startup.
+
 ### Section "action"
 
 | Parameter        | Description                                                                                                                                                                                                                                                            |
@@ -125,15 +130,17 @@ The following environment variables can be used in the "run" command:
 |------------------------|------------------------------------------|---------------|-----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | /scheduler maintenance |                                          | admin-channel | DCS Admin | Sets the servers maintenance mode.                                                                                                                                               |
 | /scheduler clear       |                                          | admin-channel | DCS Admin | Clears the maintenance state of a server.                                                                                                                                        |
+| /server cleanup        |                                          | admin-channel | DCS Admin | Delete the temporary directories of a shutdown server.                                                                                                                           |
+| /server config         |                                          | admin-channel | DCS Admin | Changes the configuration of a server, like name, password, max players.                                                                                                         |
 | /server list           |                                          | all           | DCS       | Lists all available servers.                                                                                                                                                     |
-| /server startup        | [maintenance] [mission] [run_extensions] | admin-channel | DCS Admin | Starts a dedicated DCS server process and optionally launches a specified mission (default is last one). Optional: don't set maintenance flag, don't run extensions.             |
+| /server migrate        | instance                                 | admin-channel | DCS Admin | WIP: Migrate a server to another instance (maybe even node).                                                                                                                     |
+| /server password       |                                          | admin-channel | DCS Admin | Sets a new server or [coalition](../../COALITIONS.md) password.                                                                                                                  |
+| /server rename         |                                          | admin-channel | DCS Admin | Rename the respective DCS server. Handle with care!                                                                                                                              |
+| /server restart        | [force] [run_extensions] [mission]       | admin-channel | DCS Admin | Restarts a running DCS server and optionally launches another mission.                                                                                                           |
 | /server shutdown       | [force] [maintenance]                    | admin-channel | DCS Admin | Shuts the dedicated DCS server process down.<br/>If force is used, no player check will be executed and no onShutdown command will be run. Optional: don't set maintenance flag. |
 | /server start          |                                          | admin-channel | DCS Admin | Starts a stopped DCS server.                                                                                                                                                     |
+| /server startup        | [maintenance] [mission] [run_extensions] | admin-channel | DCS Admin | Starts a dedicated DCS server process and optionally launches a specified mission (default is last one). Optional: don't set maintenance flag, don't run extensions.             |
 | /server stop           |                                          | admin-channel | DCS Admin | Stops a DCS server.                                                                                                                                                              |
-| /server password       |                                          | admin-channel | DCS Admin | Sets a new server or [coalition](../../COALITIONS.md) password.                                                                                                                  |
-| /server config         |                                          | admin-channel | DCS Admin | Changes the configuration of a server, like name, password, max players.                                                                                                         |
-| /server rename         |                                          | admin-channel | DCS Admin | Rename the respective DCS server. Handle with care!                                                                                                                              |
-| /server migrate        | instance                                 | admin-channel | DCS Admin | WIP: Migrate a server to another instance (maybe even node).                                                                                                                     |
 | /server timeleft       | server                                   | all           | DCS       | Shows the time until the next scheduled restart.                                                                                                                                 |
 
 > ⚠️ **Attention!**<br>
