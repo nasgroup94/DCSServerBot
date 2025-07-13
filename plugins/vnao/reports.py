@@ -60,12 +60,12 @@ class Greenie(EmbedElement):
                     """
         if squadron_data['is_squadron_flight'] == True:
             sql_traps_average += f"""
-                    greenie_board_data_squadron('{server_name}', '{trap_data['airframe']}','%{squadron_data['squadron_tag']}%',{config['greenie_boards']['squadron_time_min']})
+                    greenie_board_data_squadron('{server_name}', '{trap_data['airframe']}','%{squadron_data['squadron_tag']}%',{config['greenie_boards']['squadron_time_min']},1000)
                 """
             # self.log.debug(sql_traps_average)
         else:
             sql_traps_average += f"""
-                    greenie_board_data_practice('{server_name}', '{trap_data['airframe']}','%',0)
+                    greenie_board_data_practice('{server_name}', '{trap_data['airframe']}','%',0,1000)
                 """
         sql_traps_average += f"""
                 GROUP BY
@@ -106,11 +106,11 @@ class Greenie(EmbedElement):
                             """
                         if squadron_data['is_squadron_flight'] == True:
                             sql_traps += f"""
-                                    greenie_board_data_squadron('{server_name}', '{trap_data['airframe']}','%{row['player_name']}%',{config['greenie_boards']['squadron_time_min']},{config['greenie_boards']['trap_column_count']})
+                                    greenie_board_data_squadron('{server_name}', '{trap_data['airframe']}','%{row['player_name']}%',{config['greenie_boards']['squadron_time_min']},{config['greenie_boards']['trap_column_count']},1000)
                              """
                         else:
                             sql_traps += f"""
-                                    greenie_board_data_practice('{server_name}', '{trap_data['airframe']}','{row['player_name']}',0)
+                                    greenie_board_data_practice('{server_name}', '{trap_data['airframe']}','{row['player_name']}',0,1000)
                                 """
                         sql_traps += f"""
                             GROUP BY
@@ -224,7 +224,7 @@ class Greenie(EmbedElement):
             #  - https://sourceforge.net/projects/portableapps/files/Google%20Chrome%20Portable/GoogleChromePortable64_109.0.5414.120_online.paf.exe/download
             # Update the browser_exectuable path parameter to it's location and it should work.
             if css_file:
-                hti = html2image.Html2Image(browser_executable="C:\\Users\\vnaon\\GoogleChromePortable64\\GoogleChromePortable.exe",
+                hti = html2image.Html2Image(browser_executable="C:\\Users\\naval\\GoogleChromePortable\\GoogleChromePortable.exe",
                                             custom_flags=['--default-background-color=00000000', '--hide-scrollbars'])
                 hti.output_path = temp_png.parent
                 # hti.temp_path = temp_folder.name
@@ -254,7 +254,7 @@ class Greenie(EmbedElement):
             self.embed.set_image(url=f"attachment://{temp_png.name}")
 
             # This will remove the temp files that were created
-            temp_folder.cleanup()
+            # temp_folder.cleanup()
                 
 class Range(EmbedElement):
     async def render(self, server_name: str, config: dict, board_type: str):
