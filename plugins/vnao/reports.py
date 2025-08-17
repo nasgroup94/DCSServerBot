@@ -252,7 +252,6 @@ class Greenie(EmbedElement):
             self.env.filename = temp_png.name
             # self.log.debug(f"attachment://{temp_png.name}")
             self.embed.set_image(url=f"attachment://{temp_png.name}")
-
             # This will remove the temp files that were created
             # temp_folder.cleanup()
                 
