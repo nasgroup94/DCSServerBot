@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import aiofiles
 import asyncio
 import discord.errors
 import inspect
@@ -21,15 +22,13 @@ from discord.ext import commands, tasks
 from discord.utils import MISSING, _shorten
 from packaging.version import parse
 from pathlib import Path
-from typing import Type, Optional, TYPE_CHECKING, Union, Any, Dict, Callable, List
+from typing import Type, Optional, TYPE_CHECKING, Union, Any, Callable, Generic
 
 from .const import DEFAULT_TAG
 from .listener import TEventListener
 from .utils.helper import YAMLError
 
 # ruamel YAML support
-from pykwalify.errors import SchemaError
-from pykwalify.core import Core
 from ruamel.yaml import YAML
 from ruamel.yaml.error import MarkedYAMLError
 yaml = YAML()
@@ -60,7 +59,7 @@ def command(
     description: Union[str, locale_str] = MISSING,
     nsfw: bool = False,
     auto_locale_strings: bool = True,
-    extras: Dict[Any, Any] = MISSING,
+    extras: dict[Any, Any] = MISSING,
 ) -> Callable[[CommandCallback[GroupT, P, T]], Command[GroupT, P, T]]:
     """Creates an application command from a regular function.
 
@@ -113,7 +112,7 @@ def command(
     return decorator
 
 
-class Command(app_commands.Command):
+class Command(app_commands.Command[GroupT, P, T]):
 
     def __init__(
         self,
@@ -123,9 +122,9 @@ class Command(app_commands.Command):
         callback: CommandCallback[GroupT, P, T],
         nsfw: bool = False,
         parent: Optional[Group] = None,
-        guild_ids: Optional[List[int]] = None,
+        guild_ids: Optional[list[int]] = None,
         auto_locale_strings: bool = True,
-        extras: Dict[Any, Any] = MISSING,
+        extras: dict[Any, Any] = MISSING,
     ):
         from services.bot import BotService
 
@@ -143,7 +142,7 @@ class Command(app_commands.Command):
                 ((num_servers == 1 and nodes == 1) or not bot.locals.get('channels', {}).get('admin'))):
             del self._params['server']
 
-    async def _do_call(self, interaction: Interaction, params: Dict[str, Any]) -> T:
+    async def _do_call(self, interaction: Interaction, params: dict[str, Any]) -> T:
         if 'node' in inspect.signature(self._callback).parameters and 'node' not in params:
             params['node'] = interaction.client.node
         if 'server' in inspect.signature(self._callback).parameters and 'server' not in params:
@@ -156,13 +155,13 @@ class Command(app_commands.Command):
                             'No server registered for this channel. '
                             'If the channel is correct, please try again in a bit, when the server has registered.',
                             ephemeral=True)
-                        return
+                        return None
                     except discord.errors.NotFound:
                         pass
                 else:
                     # noinspection PyUnresolvedReferences
                     await interaction.response.send_message('No servers registered yet.', ephemeral=True)
-                    return
+                    return None
             params['server'] = server
         return await super()._do_call(interaction=interaction, params=params)
 
@@ -176,7 +175,7 @@ class Group(app_commands.Group):
         description: Union[str, locale_str] = MISSING,
         nsfw: bool = False,
         auto_locale_strings: bool = True,
-        extras: Dict[Any, Any] = MISSING,
+        extras: dict[Any, Any] = MISSING,
     ) -> Callable[[CommandCallback[GroupT, P, T]], Command[GroupT, P, T]]:
         """A decorator that creates an application command from a regular function under this group.
 
@@ -229,18 +228,18 @@ class Group(app_commands.Group):
         return decorator
 
 
-class Plugin(commands.Cog):
+class Plugin(commands.Cog, Generic[TEventListener]):
 
-    def __init__(self, bot: DCSServerBot, eventlistener: Type[TEventListener] = None):
+    def __init__(self, bot: DCSServerBot, eventlistener: Type[TEventListener] = None, name: Optional[str] = None):
         from services.servicebus import ServiceBus
 
         super().__init__()
-        self.plugin_name = type(self).__module__.split('.')[-2]
+        self.plugin_name = name or type(self).__module__.split('.')[-2]
         self.plugin_version = getattr(sys.modules['plugins.' + self.plugin_name], '__version__')
         self.bot: DCSServerBot = bot
         self.node = bot.node
         self.bus = ServiceRegistry.get(ServiceBus)
-        self.log = logging.getLogger(__name__)
+        self.log = logging.getLogger(f"{self.__class__.__module__}.{self.__class__.__name__}")
         self.pool = self.bot.pool
         self.apool = self.bot.apool
         self.loop = self.bot.loop
@@ -248,7 +247,7 @@ class Plugin(commands.Cog):
         if self.plugin_name != 'commands' and 'commands' in self.locals:
             self.change_commands(self.locals['commands'], {x.name: x for x in self.get_app_commands()})
         self._config = dict[str, dict]()
-        self.eventlistener: Type[TEventListener] = eventlistener(self) if eventlistener else None
+        self.eventlistener: TEventListener = eventlistener(self) if eventlistener else None
         self.wait_for_on_ready.start()
 
     async def cog_load(self) -> None:
@@ -273,7 +272,7 @@ class Plugin(commands.Cog):
                     if isinstance(params, list):
                         for param in params:
                             self.change_commands(param, group_commands)
-                    elif params:
+                    elif isinstance(params, dict):
                         self.change_commands(params, group_commands)
                     else:
                         self.log.warning(f"{self.__cog_name__} command {name} has no params!")
@@ -298,12 +297,14 @@ class Plugin(commands.Cog):
                             if 'has_role' in check.__qualname__:
                                 cmd.remove_check(check)
                         if len(params['roles']):
+                            # noinspection PyUnresolvedReferences
                             cmd.add_check(utils.cmd_has_roles(params['roles'].copy()).predicate)
                     if cmd.parent:
                         cmd.parent.add_command(cmd)
                     break
             else:
-                self.log.warning(f"{self.__cog_name__}: Command {name} not found!")
+                self.log.warning(
+                    f"Command/group \"/{name}\" not found in plugin \"{self.__cog_name__}\", can't overwrite it!")
 
     async def install(self) -> bool:
         if await self._init_db():
@@ -338,10 +339,17 @@ class Plugin(commands.Cog):
                     if cursor.rowcount == 0:
                         tables_file = f'./plugins/{self.plugin_name}/db/tables.sql'
                         if os.path.exists(tables_file):
+<<<<<<< HEAD
                             with open(tables_file, mode='r') as tables_sql:
                                 for query in [
                                     stmt.strip()
                                     for stmt in sqlparse.split(tables_sql.read(), encoding='utf-8')
+=======
+                            async with aiofiles.open(tables_file, mode='r') as tables_sql:
+                                for query in [
+                                    stmt.strip()
+                                    for stmt in sqlparse.split(await tables_sql.read(), encoding='utf-8')
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                                     if stmt.strip()
                                 ]:
                                     self.log.debug(query.rstrip())
@@ -350,7 +358,7 @@ class Plugin(commands.Cog):
                             INSERT INTO plugins (plugin, version) VALUES (%s, %s) 
                             ON CONFLICT (plugin) DO NOTHING
                         """, (self.plugin_name, self.plugin_version))
-                        self.log.info(f'  => {self.plugin_name.title()} installed.')
+                        self.log.info(f'  => {self.__cog_name__} installed.')
                         return True
                     else:
                         installed = (await cursor.fetchone())[0]
@@ -360,10 +368,14 @@ class Plugin(commands.Cog):
                         while parse(installed) < parse(self.plugin_version):
                             updates_file = f'./plugins/{self.plugin_name}/db/update_v{installed}.sql'
                             if os.path.exists(updates_file):
-                                with open(updates_file, mode='r') as updates_sql:
-                                    for query in updates_sql.readlines():
+                                async with aiofiles.open(updates_file, mode='r') as updates_sql:
+                                    for query in [
+                                        stmt.strip()
+                                        for stmt in sqlparse.split(await updates_sql.read(), encoding='utf-8')
+                                        if stmt.strip()
+                                    ]:
                                         self.log.debug(query.rstrip())
-                                        await cursor.execute(query.rstrip())
+                                        await conn.execute(query.rstrip())
                                 ver, rev = installed.split('.')
                                 installed = ver + '.' + str(int(rev) + 1)
                             elif int(self.plugin_version[0]) == 3 and int(installed[0]) < 3:
@@ -372,9 +384,9 @@ class Plugin(commands.Cog):
                                 ver, rev = installed.split('.')
                                 installed = ver + '.' + str(int(rev) + 1)
                             await self.migrate(installed, conn)
-                            self.log.info(f'  => {self.plugin_name.title()} migrated to version {installed}.')
-                        await cursor.execute('UPDATE plugins SET version = %s WHERE plugin = %s',
-                                             (self.plugin_version, self.plugin_name))
+                            self.log.info(f'  => {self.__cog_name__} migrated to version {installed}.')
+                            await cursor.execute('UPDATE plugins SET version = %s WHERE plugin = %s',
+                                                 (self.plugin_version, self.plugin_name))
                         return False
 
     @staticmethod
@@ -425,15 +437,16 @@ class Plugin(commands.Cog):
             return {}
         self.log.debug(f'  => Reading plugin configuration from {filename} ...')
         try:
+            validation = self.node.config.get('validation', 'lazy')
             path = f'./plugins/{self.plugin_name}/schemas'
-            if os.path.exists(path):
+            if os.path.exists(path) and validation in ['strict', 'lazy']:
                 schema_files = [str(x) for x in Path(path).glob('*.yaml')]
-                schema_files.append('schemas/commands_schema.yaml')
-                c = Core(source_file=filename, schema_files=schema_files, file_encoding='utf-8')
-                try:
-                    c.validate(raise_exception=True)
-                except SchemaError as ex:
-                    self.log.warning(f'Error while parsing {filename}:\n{ex}')
+                if schema_files:
+                    schema_files.append('schemas/commands_schema.yaml')
+                    utils.validate(filename, schema_files, raise_exception=(validation == 'strict'))
+                else:
+                    self.log.warning(f'  - No schema files found for plugin {self.plugin_name}.')
+
             return yaml.load(Path(filename).read_text(encoding='utf-8'))
         except MarkedYAMLError as ex:
             raise YAMLError(filename, ex)
@@ -475,8 +488,8 @@ class Plugin(commands.Cog):
             else:
                 return element
 
-        default = deepcopy(filter_element(self.locals.get(DEFAULT_TAG, {})))
-        specific = deepcopy(filter_element(self.locals.get(server.node.name, self.locals).get(server.instance.name, {})))
+        default = deepcopy(filter_element(self.locals.get(DEFAULT_TAG) or {}))
+        specific = deepcopy(filter_element(self.locals.get(server.node.name, self.locals).get(server.instance.name) or {}))
         return default, specific
 
     def get_config(self, server: Optional[Server] = None, *, plugin_name: Optional[str] = None,
@@ -492,7 +505,7 @@ class Plugin(commands.Cog):
             self._config[server.node.name] = {}
         if server.instance.name not in self._config[server.node.name] or not use_cache:
             default, specific = self.get_base_config(server)
-            self._config[server.node.name][server.instance.name] = default | specific
+            self._config[server.node.name][server.instance.name] = utils.deep_merge(default, specific)
         return self._config[server.node.name][server.instance.name]
 
     async def rename(self, conn: psycopg.AsyncConnection, old_name: str, new_name: str) -> None:

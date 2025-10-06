@@ -3,19 +3,18 @@ import json
 import os
 import psycopg
 
-from core import Plugin, TEventListener, utils, command, get_translation
+from core import Plugin, utils, command, get_translation
 from discord import app_commands
 from discord.ext import tasks
 from services.bot import DCSServerBot
-from typing import Type
 
 _ = get_translation(__name__.split('.')[1])
 
 
 class DBExporter(Plugin):
 
-    def __init__(self, bot: DCSServerBot, eventlistener: Type[TEventListener] = None):
-        super().__init__(bot, eventlistener)
+    def __init__(self, bot: DCSServerBot):
+        super().__init__(bot)
         os.makedirs('export', exist_ok=True)
         if self.get_config().get('autoexport', False):
             self.schedule.add_exception_type(psycopg.Error)

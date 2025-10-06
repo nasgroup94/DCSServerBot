@@ -21,9 +21,10 @@ if not COMMAND_LINE_ARGS:
         parser.add_argument('-s', '--secret', action='store_true', help='Reveal all stored passwords')
     elif program == 'update.py':
         parser.add_argument('-n', '--node', help='Node name', default=platform.node())
-        parser.add_argument('-d', '--delete', action='store_true', help='remove obsolete local files')
         parser.add_argument('-r', '--no-restart', action='store_true', default=False,
                             help="don't start DCSServerBot after the update")
+        parser.add_argument('-i', '--install', action='store_true', default=False,
+                            help='Install requirements.txt only')
     elif program == 'install.py':
         parser.add_argument('-n', '--node', help='Node name', default=platform.node())
         parser.add_argument('-u', '--user', help='Database username', default='dcsserverbot')
@@ -32,4 +33,6 @@ if not COMMAND_LINE_ARGS:
         parser.add_argument('-m', '--mizfile', help='Mission to patch', required=True)
         parser.add_argument('-p', '--preset', help='Preset to use, can be comma-separated')
         parser.add_argument('-f', '--presets-file', help='Presets file', default='presets.yaml')
+    elif program == 'testdriver.py':
+        parser.add_argument('-n', '--node', help='Node name', default='TestNode')
     COMMAND_LINE_ARGS = parser.parse_args()

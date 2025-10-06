@@ -1,0 +1,56 @@
+schema;node_skyeye_schema:
+  type: map
+  nullable: false
+  mapping:
+    installation: {type: str, required: true, nullable: false, range: {min: 1}, func: dir_exists}
+    autoupdate: {type: bool, nullable: false}
+    debug: {type: bool, nullable: false}
+
+schema;skyeye_config:
+  type: map
+  nullable: false
+  mapping:
+    enabled: {type: bool, nullable: false}
+    debug: {type: bool, nullable: false}
+    log: {type: str, nullable: false, range: {min: 1}}
+    affinity: {type: any, nullable: false, func: int_csv_or_list}
+    config: {type: str, nullable: false, range: {min: 1}}
+    coalition: {type: str, enum: ['blue', 'red'], nullable: false}
+    recognizer: {type: str, enum: ['openai-whisper-local', 'openai-whisper-api'], nullable: false}
+    whisper-model: {type: str, nullable: false, range: {min: 1}}
+    openai-api-key: {type: str, nullable: false, range: {min: 1}}
+    callsign: {type: str, nullable: false, range: {min: 1}}
+    callsigns:
+      type: seq
+      nullable: false
+      sequence:
+        - type: str
+          nullable: false
+          range: {min: 1}
+          unique: true
+    voice: {type: str, enum: ['feminine', 'masculine'], nullable: false}
+    voice-playback-speed: {type: float, nullable: false}
+    voice-playback-pause: {type: str, pattern: '^\d+(\.\d+)?s$', nullable: false}
+    auto-picture: {type: bool, nullable: false}
+    auto-picture-interval: {type: str, pattern: '^\d+m$', nullable: false}
+    threat-monitoring: {type: bool, nullable: false}
+    threat-monitoring-interval: {type: str, pattern: '^\d+m$', nullable: false}
+    mandatory-threat-radius: {type: int, nullable: false}
+    discord-webhook-id: {type: text, nullable: false}
+    discord-webhook-token: {type: str, nullable: false, range: {min: 1}}
+    telemetry-address: {type: str, nullable: false, range: {min: 1}, func: obsolete}
+    telemetry-password: {type: str, nullable: false, func: obsolete}
+    srs-server-address: {type: str, nullable: false, range: {min: 1}, func: obsolete}
+    srs-eam-password: {type: str, nullable: false, range: {min: 1}, func: obsolete}
+    srs-frequencies: {type: str, nullable: false}
+    enable-grpc: {type: bool, nullable: false, func: obsolete}
+    grpc-address: {type: str, nullable: false, range: {min: 1}, func: obsolete}
+    grpc-password: {type: str, nullable: false, range: {min: 1}, func: obsolete}
+    instances:
+      type: seq
+      nullable: false
+      sequence:
+        - include: 'skyeye_config'
+
+schema;instance_skyeye_schema:
+  include: 'skyeye_config'

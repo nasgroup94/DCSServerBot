@@ -1,9 +1,13 @@
 import asyncio
 import discord
 
-from core import EventListener, event, Server, Plugin, Coalition, Player, get_translation, chat_command, ChatCommand, \
-    Side, Channel, utils
+from core import (EventListener, event, Server, Coalition, Player, get_translation, chat_command, ChatCommand, Side,
+                  Channel, utils)
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from .commands import LotAtc
 
 _ = get_translation(__name__.split('.')[1])
 
@@ -12,12 +16,12 @@ _ = get_translation(__name__.split('.')[1])
 class GCI:
     name: str = field()
     coalition: Coalition = field()
-    ipaddr: str = field(init=False, default=None)
+    ipaddr: Optional[str] = field(init=False, default=None)
     radios: list[int] = field(compare=False, default_factory=list, init=False)
     lotatc: bool = field(default=False)
 
 
-class LotAtcEventListener(EventListener):
+class LotAtcEventListener(EventListener["LotAtc"]):
     COALITION_MARKUP = {
         Coalition.BLUE: "```ansi\n\u001b[0;34mBLUE {}```",
         Coalition.RED: "```ansi\n\u001b[0;31mRED {}```"
@@ -27,7 +31,7 @@ class LotAtcEventListener(EventListener):
         'on_gci_leave': _("GCI {} offline.")
     }
 
-    def __init__(self, plugin: Plugin):
+    def __init__(self, plugin: "LotAtc"):
         super().__init__(plugin)
         self.on_station: dict[str, dict[Coalition, dict[str, GCI]]] = {}
 
@@ -64,11 +68,13 @@ class LotAtcEventListener(EventListener):
                 break
         if (gci and self.get_config(server).get('kick_gci', False) and
                 not player.check_exemptions(self.get_config(server).get('exemptions', {}))):
-            # noinspection PyAsyncCall
             asyncio.create_task(server.kick(player, reason=_("You are not allowed to play when being a GCI.")))
             admin_channel = self.bot.get_admin_channel(server)
             if admin_channel:
+<<<<<<< HEAD
                 # noinspection PyAsyncCall
+=======
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                 asyncio.create_task(
                     admin_channel.send(_("GCI {} tried to join as player {}!").format(gci.name, player.name)))
             return
@@ -76,7 +82,6 @@ class LotAtcEventListener(EventListener):
         message += self._generate_message(server, Coalition.BLUE)
         message += self._generate_message(server, Coalition.RED)
         if message:
-            # noinspection PyAsyncCall
             asyncio.create_task(player.sendChatMessage(message))
 
     async def add_gci(self, server: Server, gci: GCI) -> GCI:
@@ -145,11 +150,13 @@ class LotAtcEventListener(EventListener):
         if (not player or not self.get_config(server).get('kick_gci', False) or
                 player.check_exemptions(self.get_config(server).get('exemptions', {}))):
             return
-        # noinspection PyAsyncCall
         asyncio.create_task(server.kick(player, reason=_("You are not allowed to play when being a GCI.")))
         admin_channel = self.bot.get_admin_channel(server)
         if admin_channel:
+<<<<<<< HEAD
             # noinspection PyAsyncCall
+=======
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
             asyncio.create_task(
                 admin_channel.send(_("GCI {} tried to join as player {}!").format(gci.name, player.name)))
 
@@ -161,7 +168,6 @@ class LotAtcEventListener(EventListener):
         gci.lotatc = False
         gci.ipaddr = None
         if not gci.radios:
-            # noinspection PyAsyncCall
             asyncio.create_task(self.del_gci(server, gci))
 
     @chat_command(name="gcis", help=_("Shows active GCIs"))

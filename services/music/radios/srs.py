@@ -3,8 +3,9 @@ import os
 import subprocess
 
 from core import Server, Status, Coalition, utils
+from packaging.version import parse
+from threading import Thread
 from typing import Optional
-
 from services.music.radios.base import RadioInitError, Radio
 from plugins.music.utils import get_tag
 
@@ -33,9 +34,24 @@ class SRSRadio(Radio):
                 raise RadioInitError("You need to set the SRS path in your nodes.yaml!")
             self.current = file
 
-            def run_subprocess():
-                return subprocess.Popen([
-                    os.path.join(srs_inst, "DCS-SR-ExternalAudio.exe"),
+            def exe_path() -> str:
+                version = self.server.extensions['SRS'].version
+                if parse(version) >= parse('2.2.0.0'):
+                    return os.path.join(srs_inst, "ExternalAudio", "DCS-SR-ExternalAudio.exe")
+                else:
+                    return os.path.join(srs_inst, "DCS-SR-ExternalAudio.exe")
+
+            def run_subprocess() -> subprocess.Popen:
+                def _log_output(p: subprocess.Popen):
+                    for line in iter(p.stdout.readline, b''):
+                        self.log.debug(line.decode('utf-8').rstrip())
+
+                debug = self.service.get_config().get('debug', False)
+                out = subprocess.PIPE if debug else subprocess.DEVNULL
+                err = subprocess.PIPE if debug else subprocess.DEVNULL
+
+                args = [
+                    exe_path(),
                     "-f", str(self.config['frequency']),
                     "-m", self.config['modulation'],
                     "-c", str(self.config['coalition']),
@@ -43,7 +59,13 @@ class SRSRadio(Radio):
                     "-p", str(srs_port),
                     "-n", self.config.get('display_name', 'DCSSB MusicBox'),
                     "-i", file
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                ]
+                if debug:
+                    self.log.debug(f"Running {' '.join(args)}")
+                p = subprocess.Popen(args, stdout=out, stderr=err)
+                if debug:
+                    Thread(target=_log_output, args=(p,), daemon=True).start()
+                return p
 
             self.process = await asyncio.to_thread(run_subprocess)
             coalition = Coalition.BLUE if int(self.config['coalition']) == 2 else Coalition.RED

@@ -57,15 +57,15 @@ class Player(DataObject):
             with conn.transaction():
                 with closing(conn.cursor()) as cursor:
                     cursor.execute("""
-                        SELECT p.discord_id, CASE WHEN b.ucid IS NOT NULL THEN TRUE ELSE FALSE END AS banned, 
+                        SELECT DISTINCT p.discord_id, CASE WHEN b.ucid IS NOT NULL THEN TRUE ELSE FALSE END AS banned, 
                                p.manual, c.coalition, 
                                CASE WHEN w.player_ucid IS NOT NULL THEN TRUE ELSE FALSE END AS watchlict, p.vip 
                         FROM players p LEFT OUTER JOIN bans b ON p.ucid = b.ucid 
-                        LEFT OUTER JOIN coalitions c ON p.ucid = c.player_ucid 
+                        LEFT OUTER JOIN coalitions c ON p.ucid = c.player_ucid AND c.server_name = %s
                         LEFT OUTER JOIN watchlist w ON p.ucid = w.player_ucid
                         WHERE p.ucid = %s 
                         AND COALESCE(b.banned_until, (now() AT TIME ZONE 'utc')) >= (now() AT TIME ZONE 'utc')
-                    """, (self.ucid, ))
+                    """, (self.server.name, self.ucid))
                     # existing member found?
                     if cursor.rowcount == 1:
                         row = cursor.fetchone()
@@ -96,7 +96,7 @@ class Player(DataObject):
                         ON CONFLICT (ucid) DO UPDATE SET name=excluded.name, last_seen=excluded.last_seen
                         """, (self.ucid, self.name))
         # if automatch is enabled, try to match the user
-        if not self.member and self.bot.locals.get('automatch', True):
+        if not self.member and self.bot.locals.get('automatch', False):
             discord_user = self.bot.match_user({"ucid": self.ucid, "name": self.name})
             if discord_user:
                 self.member = discord_user
@@ -252,9 +252,13 @@ class Player(DataObject):
             })
 
     async def sendUserMessage(self, message: str, timeout: Optional[int] = -1):
+<<<<<<< HEAD
         # noinspection PyAsyncCall
         asyncio.create_task(self.sendPopupMessage(message, timeout))
         # noinspection PyAsyncCall
+=======
+        asyncio.create_task(self.sendPopupMessage(message, timeout))
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         asyncio.create_task(self.sendChatMessage(message))
 
     async def sendPopupMessage(self, message: str, timeout: Optional[int] = -1, sender: str = None):
@@ -352,3 +356,18 @@ class Player(DataObject):
             "id": self.id,
             "key": key
         })
+<<<<<<< HEAD
+=======
+
+    async def lock(self) -> None:
+        await self.server.send_to_dcs({
+            "command": "lock_player",
+            "ucid": self.ucid
+        })
+
+    async def unlock(self) -> None:
+        await self.server.send_to_dcs({
+            "command": "unlock_player",
+            "ucid": self.ucid
+        })
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b

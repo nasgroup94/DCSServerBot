@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core import Server, Player
+    from .commands import Help
 
 
-class HelpListener(EventListener):
+class HelpListener(EventListener["Help"]):
 
     @event(name="onPlayerStart")
     async def onPlayerStart(self, server: Server, data: dict) -> None:
@@ -17,7 +18,6 @@ class HelpListener(EventListener):
             return
         player: Player = server.get_player(ucid=data['ucid'])
         if player:
-            # noinspection PyAsyncCall
             asyncio.create_task(player.sendChatMessage(f"Use \"{self.prefix}help\" for commands."))
 
     @chat_command(name="help", help="The help command")

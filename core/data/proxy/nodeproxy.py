@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 
 from core.data.node import Node, UploadStatus, SortOrder
@@ -9,18 +11,17 @@ from typing import Union, Optional, TYPE_CHECKING
 
 # ruamel YAML support
 from ruamel.yaml import YAML
+yaml = YAML()
 
 if TYPE_CHECKING:
     from core import Instance, Server
     from core import NodeImpl
 
-yaml = YAML()
-
 __all__ = ["NodeProxy"]
 
 
 class NodeProxy(Node):
-    def __init__(self, local_node: "NodeImpl", name: str, public_ip: str):
+    def __init__(self, local_node: NodeImpl, name: str, public_ip: str, dcs_version: str):
         from services.servicebus import ServiceBus
 
         super().__init__(name, local_node.config_dir)
@@ -32,6 +33,8 @@ class NodeProxy(Node):
         self.locals = self.read_locals()
         self.bus = ServiceRegistry.get(ServiceBus)
         self.slow_system = self.locals.get('slow_system', False)
+        self.dcs_version = dcs_version
+        self.is_remote = True
 
     @property
     def master(self) -> bool:
@@ -39,7 +42,7 @@ class NodeProxy(Node):
 
     @master.setter
     def master(self, value: bool):
-        raise NotImplemented()
+        raise NotImplementedError()
 
     @property
     def public_ip(self) -> str:
@@ -51,7 +54,7 @@ class NodeProxy(Node):
 
     @property
     def installation(self) -> str:
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def read_locals(self) -> dict:
         _locals = dict()
@@ -102,14 +105,17 @@ class NodeProxy(Node):
             "method": "upgrade"
         }, node=self.name)
 
-    async def update(self, warn_times: list[int], branch: Optional[str] = None) -> int:
+    async def dcs_update(self, branch: Optional[str] = None, version: Optional[str] = None,
+                         warn_times: list[int] = None, announce: Optional[bool] = True):
         data = await self.bus.send_to_node_sync({
             "command": "rpc",
             "object": "Node",
             "method": "update",
             "params": {
                 "warn_times": warn_times,
-                "branch": branch or ""
+                "branch": branch or "",
+                "version": version or "",
+                "announce": announce
             }
         }, node=self.name, timeout=600)
         return data['return']
@@ -156,6 +162,23 @@ class NodeProxy(Node):
         return data['return']
 
     @cache_with_expiration(expiration=60)
+<<<<<<< HEAD
+=======
+    async def get_available_dcs_versions(self, branch: str) -> Optional[list[str]]:
+        timeout = 60 if not self.slow_system else 120
+        data = await self.bus.send_to_node_sync({
+            "command": "rpc",
+            "object": "Node",
+            "method": "get_available_dcs_versions",
+            "params": {
+                "branch": branch
+            }
+        }, node=self.name, timeout=timeout)
+        return data['return']
+
+
+    @cache_with_expiration(expiration=60)
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
     async def get_latest_version(self, branch: str) -> Optional[str]:
         timeout = 60 if not self.slow_system else 120
         data = await self.bus.send_to_node_sync({
@@ -268,7 +291,7 @@ class NodeProxy(Node):
             }
         }, node=self.name, timeout=timeout)
 
-    async def rename_server(self, server: "Server", new_name: str, update_settings: Optional[bool] = False):
+    async def rename_server(self, server: Server, new_name: str, update_settings: Optional[bool] = False):
         timeout = 60 if not self.slow_system else 120
         await self.bus.send_to_node_sync({
             "command": "rpc",
@@ -281,7 +304,7 @@ class NodeProxy(Node):
             }
         }, node=self.name, timeout=timeout)
 
-    async def add_instance(self, name: str, *, template: str = "") -> "Instance":
+    async def add_instance(self, name: str, *, template: str = "") -> Instance:
         timeout = 60 if not self.slow_system else 120
         data = await self.bus.send_to_node_sync({
             "command": "rpc",
@@ -292,9 +315,13 @@ class NodeProxy(Node):
                 "template": template
             }
         }, node=self.name, timeout=timeout)
-        return InstanceProxy(name=data['return'], node=self)
+        instance = next((x for x in self.instances if x.name == name), None)
+        if not instance:
+            instance = InstanceProxy(name=data['return'], node=self)
+            self.instances.append(instance)
+        return instance
 
-    async def delete_instance(self, instance: "Instance", remove_files: bool) -> None:
+    async def delete_instance(self, instance: Instance, remove_files: bool) -> None:
         timeout = 60 if not self.slow_system else 120
         await self.bus.send_to_node_sync({
             "command": "rpc",
@@ -305,8 +332,9 @@ class NodeProxy(Node):
                 "remove_files": remove_files
             }
         }, node=self.name, timeout=timeout)
+        self.instances.remove(instance)
 
-    async def rename_instance(self, instance: "Instance", new_name: str) -> None:
+    async def rename_instance(self, instance: Instance, new_name: str) -> None:
         timeout = 60 if not self.slow_system else 120
         await self.bus.send_to_node_sync({
             "command": "rpc",
@@ -328,7 +356,7 @@ class NodeProxy(Node):
         }, node=self.name, timeout=timeout)
         return data['return']
 
-    async def migrate_server(self, server: "Server", instance: "Instance"):
+    async def migrate_server(self, server: Server, instance: Instance):
         timeout = 180 if not self.slow_system else 300
         await self.bus.send_to_node_sync({
             "command": "rpc",
@@ -340,7 +368,7 @@ class NodeProxy(Node):
             }
         }, node=self.name, timeout=timeout)
 
-    async def unregister_server(self, server: "Server") -> None:
+    async def unregister_server(self, server: Server) -> None:
         timeout = 60 if not self.slow_system else 120
         await self.bus.send_to_node_sync({
             "command": "rpc",
@@ -350,3 +378,41 @@ class NodeProxy(Node):
                 "server": server.name
             }
         }, node=self.name, timeout=timeout)
+
+    async def install_plugin(self, plugin: str) -> bool:
+        timeout = 60 if not self.slow_system else 120
+        data = await self.bus.send_to_node_sync({
+            "command": "rpc",
+            "object": "Node",
+            "method": "install_plugin",
+            "params": {
+                "plugin": plugin
+            }
+        }, node=self.name, timeout=timeout)
+        return data['return']
+
+    async def uninstall_plugin(self, plugin: str) -> bool:
+        timeout = 60 if not self.slow_system else 120
+        data = await self.bus.send_to_node_sync({
+            "command": "rpc",
+            "object": "Node",
+            "method": "uninstall_plugin",
+            "params": {
+                "plugin": plugin
+            }
+        }, node=self.name, timeout=timeout)
+        return data['return']
+
+    async def get_cpu_info(self) -> Union[bytes, int]:
+        timeout = 60 if not self.slow_system else 120
+        data = await self.bus.send_to_node_sync({
+            "command": "rpc",
+            "object": "Node",
+            "method": "get_cpu_info"
+        }, timeout=timeout, node=self.name)
+        async with self.apool.connection() as conn:
+            async with conn.transaction():
+                cursor = await conn.execute("SELECT data FROM files WHERE id = %s", (data['return'], ), binary=True)
+                image = (await cursor.fetchone())[0]
+                await conn.execute("DELETE FROM files WHERE id = %s", (data['return'], ))
+        return image

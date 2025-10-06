@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import platform
@@ -17,7 +18,7 @@ from pathlib import Path
 from rich import print
 from rich.console import Console
 from rich.prompt import IntPrompt, Prompt, Confirm
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 from urllib.parse import quote, urlparse
 
 # ruamel YAML support
@@ -32,9 +33,10 @@ class Install:
 
     def __init__(self, node: str):
         self.node = node
-        self.log = logging.getLogger(name='dcsserverbot')
+        self.log = logging.getLogger(f"{self.__class__.__module__}.{self.__class__.__name__}")
         self.log.propagate = False
         self.log.setLevel(logging.DEBUG)
+        self.use_upnp = utils.is_upnp_available()
         formatter = logging.Formatter(fmt=u'%(asctime)s.%(msecs)03d %(levelname)s\t%(message)s',
                                       datefmt='%Y-%m-%d %H:%M:%S')
         os.makedirs('logs', exist_ok=True)
@@ -51,7 +53,10 @@ class Install:
         dcs_installation = None
         while dcs_installation is None:
             dcs_installation = Prompt.ask(prompt=_("Please enter the path to your DCS World installation"))
-            if not os.path.exists(dcs_installation):
+            if not dcs_installation:
+                if Confirm.ask(_("Do you want to continue without a DCS installation being set?"), default=False):
+                    return None
+            elif not os.path.exists(dcs_installation):
                 print(_("Directory not found. Please try again."))
                 dcs_installation = None
         return dcs_installation
@@ -109,8 +114,10 @@ class Install:
     def get_database_url(user: str, database: str) -> Optional[str]:
         host, port = Install.get_database_host('127.0.0.1', 5432)
         while True:
-            passwd = Prompt.ask(_('Please enter your PostgreSQL master password (user=postgres)'))
-            url = f'postgres://postgres:{quote(passwd)}@{host}:{port}/postgres?sslmode=prefer'
+            master_db = Prompt.ask(_('Please enter the name of your PostgreSQL master database'), default='postgres')
+            master_user = Prompt.ask(_('Please enter your PostgreSQL master user name'), default='postgres')
+            master_passwd = Prompt.ask(_('Please enter your PostgreSQL master password (user={})').format(master_user))
+            url = f'postgres://{master_user}:{quote(master_passwd)}@{host}:{port}/{master_db}?sslmode=prefer'
             try:
                 with psycopg.connect(url, autocommit=True) as conn:
                     with closing(conn.cursor()) as cursor:
@@ -133,6 +140,7 @@ class Install:
                                     print(_("[red]Wrong password! Try again ({}/3).[/]").format(i+1))
                             else:
                                 print(_('[yellow]You have entered 3x a wrong password. I have reset it.[/]'))
+                                passwd = secrets.token_urlsafe(8)
                                 cursor.execute(f"ALTER USER {user} WITH ENCRYPTED PASSWORD '{passwd}'")
                         # store the password
                         utils.set_password('database', passwd)
@@ -158,7 +166,7 @@ class Install:
             print(_("\n[u]2. Discord Setup[/]"))
             guild_id = IntPrompt.ask(
                 _('Please enter your Discord Guild ID (right click on your Discord server, "Copy Server ID")'))
-            main = {
+            main: dict[str, Any] = {
                 "guild_id": guild_id,
                 "autoupdate": autoupdate
             }
@@ -315,99 +323,72 @@ If you need any further assistance, please visit the support discord, listed in 
             master = False
             i = 0
 
-        print(_("\n{}. [u]Database Setup[/]").format(i+1))
+        print(_("\n{}. [u]Database Setup[/]").format(i + 1))
         if master:
             database_url = Install.get_database_url(user, database)
             if not database_url:
                 self.log.error(_("Aborted: No valid Database URL provided."))
                 exit(-1)
         else:
-            try:
-                database_url = next(node['database']['url'] for node in nodes.values() if node.get('database'))
+            if 'database' in main:
+                database_url = main['database']['url']
+            else:
+                try:
+                    database_url = next(node['database']['url'] for node in nodes.values() if node.get('database'))
+                except StopIteration:
+                    database_url = None
+            if database_url:
                 url = urlparse(database_url)
                 hostname, port = self.get_database_host(url.hostname, url.port)
                 database_url = f"{url.scheme}://{url.username}:{url.password}@{hostname}:{port}{url.path}?sslmode=prefer"
-            except StopIteration:
+            else:
                 database_url = Install.get_database_url(user, database)
+                if not database_url:
+                    self.log.error(_("Aborted: No valid Database URL provided."))
+                    exit(-1)
 
         print(_("\n{}. [u]Node Setup[/]").format(i+2))
         if sys.platform == 'win32':
             dcs_installation = Install.get_dcs_installation_win32() or '<see documentation>'
         else:
             dcs_installation = Install.get_dcs_installation_linux()
-        if not dcs_installation:
-            self.log.error(_("Aborted: No DCS installation found."))
-            exit(-1)
         node = nodes[self.node] = {
-            "listen_port": max([n.get('listen_port', 10041 + idx) for idx, n in enumerate(nodes.values())]) + 1 if nodes else 10042,
-            "DCS": {
-                "installation": dcs_installation
-            },
-            "database": {
+            "listen_port": max([
+                n.get('listen_port', 10041 + idx) for idx, n in enumerate(nodes.values())
+            ]) + 1 if nodes else 10042,
+            "use_upnp": self.use_upnp
+        }
+        public_ip = asyncio.run(utils.get_public_ip())
+        if Confirm.ask(_("Is {} a static IP-address for this node?").format(public_ip), default=False):
+            node['public_ip'] = public_ip
+        if 'database' not in main:
+            node["database"] = {
                 "url": database_url
             }
-        }
-        if Confirm.ask(_("Do you want your DCS installation being auto-updated by the bot?"), default=True):
-            node["DCS"]["autoupdate"] = True
-        # Check for SRS
-        srs_path = os.path.expandvars('%ProgramFiles%\\DCS-SimpleRadio-Standalone')
-        if not os.path.exists(srs_path):
-            srs_path = Prompt.ask(_("Please enter the path to your DCS-SRS installation.\n"
-                                    "Press ENTER, if there is none."))
-        if srs_path:
-            self.log.info(_("DCS-SRS installation path: {}").format(srs_path))
-            node['extensions'] = {
-                'SRS': {
-                    'installation': srs_path
-                }
+        if dcs_installation:
+            node["DCS"] = {
+                "installation": dcs_installation
             }
-        else:
-            self.log.info(_("DCS-SRS not configured."))
 
-        print(_("\n{}. [u]DCS Server Setup[/]").format(i+3))
-        scheduler = schedulers[self.node] = {}
-        node['instances'] = {}
-        # calculate unique bot ports
-        bot_port = max([
-            i.get('bot_port', 6665 + idx)
-            for idx, i in enumerate([n.get('instances', []) for n in nodes.values()])
-        ]) + 1 if nodes else 6666
-        # calculate unique SRS ports
-        srs_port = max([
-            i.get('extensions', {}).get('SRS', {}).get('port', 5001 + idx)
-            for idx, i in enumerate([n.get('instances', []) for n in nodes.values()])
-        ]) + 1 if nodes else 5002
-        print(_("Searching for existing DCS server configurations ..."))
-        instances = utils.findDCSInstances()
-        if not instances:
-            print(_("No configured DCS servers found."))
-        for name, instance in instances:
-            if Confirm.ask(_('\n[i]DCS server "{}" found.[/i]\n'
-                             'Would you like to manage this server through DCSServerBot?').format(name), default=True):
-                self.log.info(_("Adding instance {instance} with server {name} ...").format(instance=instance,
-                                                                                            name=name))
-                node['instances'][instance] = {
-                    "bot_port": bot_port,
-                    "home": os.path.join(SAVED_GAMES, instance)
-                }
-                if srs_path:
-                    srs_config = f"%USERPROFILE%\\Saved Games\\{instance}\\Config\\SRS.cfg"
-                    node['instances'][instance]['extensions'] = {
-                        "SRS": {
-                            "config": srs_config,
-                            "port": srs_port
-                        }
+            if Confirm.ask(_("Do you want your DCS installation being auto-updated by the bot?"), default=True):
+                node["DCS"]["autoupdate"] = True
+
+            # Check for SRS
+            srs_path = os.path.expandvars('%ProgramFiles%\\DCS-SimpleRadio-Standalone')
+            if not os.path.exists(srs_path):
+                srs_path = Prompt.ask(_("Please enter the path to your DCS-SRS installation.\n"
+                                        "Press ENTER, if there is none."))
+            if srs_path:
+                self.log.info(_("DCS-SRS installation path: {}").format(srs_path))
+                node['extensions'] = {
+                    'SRS': {
+                        'installation': srs_path
                     }
-                    if not os.path.exists(os.path.expandvars(srs_config)):
-                        if os.path.exists(os.path.join(srs_path, "server.cfg")):
-                            shutil.copy2(os.path.join(srs_path, "server.cfg"), os.path.expandvars(srs_config))
-                        else:
-                            print(_("[red]SRS configuration could not be created.\n"
-                                    "Please copy your server.cfg to {} manually.[/]").format(srs_config))
-                            self.log.warning(_("SRS configuration could not be created, manual setup necessary."))
-                bot_port += 1
-                srs_port += 2
+                }
+            else:
+                self.log.info(_("DCS-SRS not configured."))
 
+<<<<<<< HEAD
                 # we only set up channels, if we configure a discord bot
                 if not bot.get('no_discord', False):
                     channels = {
@@ -442,18 +423,112 @@ If you need any further assistance, please visit the support discord, listed in 
                     if not bot.get('channels', {}).get('admin'):
                         servers[name]['channels']['admin'] = IntPrompt.ask(
                             _("Please enter the ID of your [bold]Admin Channel[/]"))
+=======
+            print(_("\n{}. [u]DCS Server Setup[/]").format(i+3))
+            scheduler = schedulers[self.node] = {}
+            node['instances'] = {}
+            # calculate unique bot ports
+            bot_port = max([
+                i.get('bot_port', 6665 + idx)
+                for idx, i in enumerate([
+                    n['instances'] for n in nodes.values() if 'instances' in n
+                ])
+            ]) + 1 if nodes else 6666
+
+            # calculate unique SRS ports
+            srs_port = max([
+                i.get('extensions', {}).get('SRS', {}).get('port', 5001 + idx)
+                for idx, i in enumerate([
+                    n['instances'] for n in nodes.values() if 'instances' in n
+                ])
+            ]) + 1 if nodes else 5002
+
+            print(_("Searching for existing DCS server configurations ..."))
+            instances = utils.findDCSInstances()
+            if not instances:
+                print(_("No configured DCS servers found."))
+            for name, instance in instances:
+                if not name or name in ['n/a', 'DCS Server']:
+                    print(_("DCS Server without name found in Saved Games\\{}.").format(instance))
+                    if not Confirm.ask(_("Would you like to give it a name?"), default=True):
+                        continue
+                    name = Prompt.ask("Please enter a server name:")
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                 else:
-                    servers[name] = {}
-                if Prompt.ask(_("Do you want DCSServerBot to autostart this server?"), choices=['y', 'n'],
-                              default='y') == 'y':
-                    scheduler[instance] = {
-                        "schedule": {
-                            "00-24": "YYYYYYY"
-                        }
+                    print(_('\n[i]DCS Server "{}" found.[/i]\n').format(name))
+
+                if Confirm.ask(_('Would you like to manage this server through DCSServerBot?'), default=True):
+                    self.log.info(_("Adding instance {instance} with server {name} ...").format(instance=instance,
+                                                                                                name=name))
+                    node['instances'][instance] = {
+                        "bot_port": bot_port,
+                        "home": os.path.join(SAVED_GAMES, instance)
                     }
-                else:
-                    scheduler[instance] = {}
-                self.log.info(_("Instance {} configured.").format(instance))
+                    if srs_path:
+                        node['instances'][instance]['extensions'] = {
+                            "SRS": {
+                                "config": "{instance.home}/Config/SRS.cfg",
+                                "port": srs_port
+                            }
+                        }
+                        srs_config = os.path.join(SAVED_GAMES, instance, 'Config', 'SRS.cfg')
+                        if not os.path.exists(os.path.expandvars(srs_config)):
+                            if os.path.exists(os.path.join(srs_path, "server.cfg")):
+                                shutil.copy2(os.path.join(srs_path, "server.cfg"), os.path.expandvars(srs_config))
+                            else:
+                                print(_("[red]SRS configuration could not be created.\n"
+                                        "Please copy your server.cfg to {} manually.[/]").format(srs_config))
+                                self.log.warning(_("SRS configuration could not be created, manual setup necessary."))
+                    bot_port += 1
+                    srs_port += 2
+
+                    # we only set up channels if we configure a discord bot
+                    if not bot.get('no_discord', False):
+                        channels = {
+                            "Status Channel": _("To display the mission and player status."),
+                            "Chat Channel": _("Optional: An in-game chat replication.")
+                        }
+                        if not bot.get('channels', {}).get('admin'):
+                            channels['Admin Channel'] = _("For admin commands.")
+                        print(_("DCSServerBot uses up to {} channels per supported server:").format(len(channels)))
+                        print(channels)
+                        print(_("\nThe Status Channel should be readable by everyone and only writable by the bot.\n"
+                                "The Chat Channel should be readable and writable by everyone.\n"
+                                "The Admin channel - central or not - should only be readable and writable by Admin and DCS Admin users.\n\n"
+                                "You can create these channels now, as I will ask for the IDs in a bit.\n"
+                                "DCSServerBot needs the following permissions on them to work:\n\n"
+                                "    - View Channel\n"
+                                "    - Send Messages\n"
+                                "    - Read Messages\n"
+                                "    - Read Message History\n"
+                                "    - Add Reactions\n"
+                                "    - Attach Files\n"
+                                "    - Embed Links\n"
+                                "    - Manage Messages\n\n"))
+
+                        servers[name] = {
+                            "channels": {
+                                "status": IntPrompt.ask(_("Please enter the ID of your [bold]Status Channel[/]")),
+                                "chat": IntPrompt.ask(_("Please enter the ID of your [bold]Chat Channel[/] (optional)"),
+                                                      default=-1)
+                            }
+                        }
+                        if not bot.get('channels', {}).get('admin'):
+                            servers[name]['channels']['admin'] = IntPrompt.ask(
+                                _("Please enter the ID of your [bold]Admin Channel[/]"))
+                    else:
+                        servers[name] = {}
+                    if Prompt.ask(_("Do you want DCSServerBot to autostart this server?"), choices=['y', 'n'],
+                                  default='y') == 'y':
+                        scheduler[instance] = {
+                            "schedule": {
+                                "00-24": "YYYYYYY"
+                            }
+                        }
+                    else:
+                        scheduler[instance] = {}
+                    self.log.info(_("Instance {} configured.").format(instance))
+
         print(_("\n\nAll set. Writing / updating your config files now..."))
         if master:
             os.makedirs(config_dir, exist_ok=True)
@@ -475,26 +550,31 @@ If you need any further assistance, please visit the support discord, listed in 
         print(_("- Created {}").format(os.path.join(config_dir, "servers.yaml")))
         self.log.info(_("{} written.").format(os.path.join(config_dir, "servers.yaml")))
         # write plugin configuration
-        if scheduler:
+        if schedulers:
             os.makedirs(os.path.join(config_dir, 'plugins'), exist_ok=True)
             with open(os.path.join(config_dir, 'plugins', 'scheduler.yaml'), mode='w', encoding='utf-8') as out:
                 yaml.dump(schedulers, out)
             print(_("- Created {}").format(os.path.join(config_dir, 'plugins', 'scheduler.yaml')))
             self.log.info(_("{} written.").format(os.path.join(config_dir, 'plugins', 'scheduler.yaml')))
-        try:
-            os.chmod(os.path.join(dcs_installation, 'Scripts', 'MissionScripting.lua'), stat.S_IWUSR)
-        except PermissionError:
-            print(_("[red]You need to give DCSServerBot write permissions on {} to desanitize your MissionScripting.lua![/]").format(dcs_installation))
-        print(_("\n[green]Your basic DCSServerBot configuration is finished.[/]\n\n"
-                "You can now review the created configuration files below your config folder of your DCSServerBot-installation.\n"
-                "There is much more to explore and to configure, so please don't forget to have a look at the documentation!\n\n"
-                "You can start DCSServerBot with:\n\n"
-                "    [bright_black]run.cmd[/]\n\n"))
+        if dcs_installation:
+            try:
+                os.chmod(os.path.join(dcs_installation, 'Scripts', 'MissionScripting.lua'), stat.S_IWUSR)
+            except PermissionError:
+                print(_("[red]You need to give DCSServerBot write permissions on {} to desanitize your MissionScripting.lua![/]").format(dcs_installation))
+        if sys.platform == 'win32':
+            run_script = 'run.cmd'
+        else:
+            run_script = 'run.sh'
+        print(_(f"\n[green]Your basic DCSServerBot configuration is finished.[/]\n\n"
+                f"You can now review the created configuration files below your config folder of your DCSServerBot-installation.\n"
+                f"There is much more to explore and to configure, so please don't forget to have a look at the documentation!\n\n"
+                f"You can start DCSServerBot with:\n\n"
+                f"    [bright_black]{run_script}[/]\n\n"))
         self.log.info(_("Installation finished."))
 
 
 if __name__ == "__main__":
-    # get the command line args from core
+    # get the command line args from the core
     args = COMMAND_LINE_ARGS
     console = Console()
     try:

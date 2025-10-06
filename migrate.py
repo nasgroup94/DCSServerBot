@@ -8,7 +8,11 @@ from configparser import ConfigParser
 from contextlib import suppress
 from copy import deepcopy
 from core import utils
+<<<<<<< HEAD
 from core.const import DEFAULT_TAG
+=======
+from core.const import DEFAULT_TAG, SAVED_GAMES
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 from core.plugin import BACKUP_FOLDER
 from core.data.node import Node
 from pathlib import Path
@@ -131,6 +135,7 @@ def post_migrate_greenieboard(node: str):
             yaml.dump(data, outfile)
 
 
+<<<<<<< HEAD
 def migrate(node: Node, old_version: str, new_version: str):
     if old_version == 'v3.10' and new_version == 'v3.11':
         migrate_3_11(node)
@@ -140,6 +145,24 @@ def migrate_3_11(node: Node):
     filename = os.path.join(node.config_dir, 'services', 'bot.yaml')
     if not os.path.exists(filename):
         return
+=======
+def migrate(node: Node, old_version: str, new_version: str) -> int:
+    if old_version == 'v3.10' and new_version == 'v3.11':
+        return migrate_3_11(node)
+    elif old_version == 'v3.11' and new_version == 'v3.12':
+        return migrate_3_12(node)
+    elif old_version == 'v3.12' and new_version == 'v3.13':
+        return migrate_3_13(node)
+    elif old_version == 'v3.14' and new_version == 'v3.15':
+        return migrate_3_15(node)
+    return 0
+
+def migrate_3_11(node: Node) -> int:
+    filename = os.path.join(node.config_dir, 'services', 'bot.yaml')
+    if not os.path.exists(filename):
+        node.log.error('main.yaml not found. Exiting.')
+        return -2
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
     with open(filename, mode='r', encoding='utf-8') as infile:
         data = yaml.load(infile)
     channels = {}
@@ -152,6 +175,95 @@ def migrate_3_11(node: Node):
         with open(filename, mode='w', encoding='utf-8') as outfile:
             yaml.dump(data, outfile)
         node.log.info("  => config/services/bot.yaml auto-migrated, please check")
+<<<<<<< HEAD
+=======
+        return -1
+    return 0
+
+
+def migrate_3_12(node: Node) -> int:
+    filename = os.path.join(node.config_dir, 'services', 'scheduler.yaml')
+    if os.path.exists(filename):
+        shutil.move(filename, os.path.join(node.config_dir, 'services', 'core.yaml'))
+
+    filename = os.path.join(node.config_dir, 'main.yaml')
+    if not os.path.exists(filename):
+        node.log.error('main.yaml not found. Exiting.')
+        return -2
+
+    with open(filename, mode='r', encoding='utf-8') as infile:
+        data = yaml.load(infile)
+    if 'ovgme' in data.get('opt_plugins', []):
+        data['opt_plugins'].remove('ovgme')
+        data['opt_plugins'].append('modmanager')
+        with open(filename, mode='w', encoding='utf-8') as outfile:
+            yaml.dump(data, outfile)
+        node.log.info("  => main.yaml auto-migrated, please check")
+        with node.pool.connection() as conn:
+            with conn.transaction():
+                conn.execute("UPDATE plugins SET plugin = 'modmanager' WHERE plugin = 'ovgme'")
+        filename = os.path.join(node.config_dir, 'services', 'ovgme.yaml')
+        if os.path.exists(filename):
+            shutil.move(filename, os.path.join(node.config_dir, 'services', 'modmanager.yaml'))
+            node.log.info("  => ovgme.yaml renamed to modmanager.yaml")
+        filename = os.path.join(node.config_dir, 'nodes.yaml')
+        with open(filename, mode='r', encoding='utf-8') as infile:
+            data = yaml.load(infile)
+        dirty = False
+        for _node in data.values():
+            for instance in _node['instances'].values():
+                if 'extensions' in instance and 'OvGME' in instance['extensions']:
+                    instance['extensions']['ModManager'] = instance['extensions'].pop('OvGME')
+                    dirty = True
+        if dirty:
+            with open(filename, mode='w', encoding='utf-8') as outfile:
+                yaml.dump(data, outfile)
+            node.log.info("  => node.yaml auto-migrated, please check")
+        return -1
+    return 0
+
+
+def migrate_3_13(node: Node) -> int:
+    ignore = ['.dcssb']
+    nodes = yaml.load(Path(os.path.join(node.config_dir, 'nodes.yaml')).read_text(encoding='utf-8'))
+    for node_name in nodes.keys():
+        for name, instance in nodes[node_name].get('instances', {}).items():
+            home = os.path.expandvars(instance.get('home', os.path.join(SAVED_GAMES, name)))
+            missions_dir = instance.get('missions_dir', os.path.join(home, 'Missions'))
+            for file in Path(missions_dir).rglob('*.orig'):
+                if file.name in ignore or os.path.basename(file.parent) in ignore:
+                    continue
+                new_file = os.path.join(os.path.dirname(file), '.dcssb', os.path.basename(file))
+                os.makedirs(os.path.dirname(new_file), exist_ok=True)
+                shutil.move(file, new_file)
+    return 0
+
+
+def migrate_3_15(node: Node) -> int:
+    file = Path(os.path.join(node.config_dir, 'nodes.yaml'))
+    nodes = yaml.load(file.read_text(encoding='utf-8'))
+    dirty = False
+    for data in nodes.values():
+        if isinstance(data.get('DCS', {}).get('autoupdate'), dict):
+            data['DCS']['announce'] = data['DCS'].pop('autoupdate')
+            data['DCS']['autoupdate'] = True
+            dirty = True
+
+        for name, extension in data.get('extensions', {}).items():
+            if name not in ['SRS', 'LotAtc']:
+                continue
+            if isinstance(extension.get('autoupdate'), dict):
+                extension['announce'] = extension.pop('autoupdate')
+                extension['autoupdate'] = True
+                dirty = True
+
+    if dirty:
+        with open(file, mode='w', encoding='utf-8') as outfile:
+            yaml.dump(nodes, outfile)
+        node.log.info("  => node.yaml auto-migrated, please check")
+        return -1
+    return 0
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
 
 def migrate_3(node: str):
@@ -205,14 +317,6 @@ def migrate_3(node: str):
                 if plugin_name in ['backup', 'ovgme', 'music']:
                     shutil.move(f'config/plugins/{plugin_name}.yaml', f'config/services/{plugin_name}.yaml')
                     print(f"- Migrated config/{plugin_name}.json to config/services/{plugin_name}.yaml")
-                elif plugin_name == 'commands':
-                    data = yaml.load(Path('config/plugins/commands.yaml').read_text(encoding='utf-8'))
-                    data[DEFAULT_TAG] = {
-                        "command_prefix": cfg['BOT']['COMMAND_PREFIX']
-                    }
-                    with open('config/plugins/commands.yaml', mode='w', encoding='utf-8') as out:
-                        yaml.dump(data, out)
-                    print("- Migrated config/commands.json to config/plugins/commands.yaml")
                 else:
                     print(f"- Migrated config/{plugin_name}.json to config/plugins/{plugin_name}.yaml")
 
@@ -386,7 +490,7 @@ def migrate_3(node: str):
                 # fill missionstats
                 m = missionstats[instance] = {}
                 if 'EVENT_FILTER' in cfg['FILTER']:
-                    m['filter'] = [x.strip() for x in cfg['FILTER']['EVENT_FILTER'].split(',')]
+                    m['event_filter'] = [x.strip() for x in cfg['FILTER']['EVENT_FILTER'].split(',')]
                 m['enabled'] = cfg[instance].getboolean('MISSION_STATISTICS')
                 m['display'] = cfg[instance].getboolean('DISPLAY_MISSION_STATISTICS')
                 m['persistence'] = cfg[instance].getboolean('PERSIST_MISSION_STATISTICS')

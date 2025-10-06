@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+# Default imports
 import asyncio
 import certifi
 import discord
+import faulthandler
 import logging
 import os
 import pathlib
@@ -10,21 +12,43 @@ import platform
 import psycopg
 import sys
 import time
+import traceback
 
-from core import (
-    NodeImpl, ServiceRegistry, ServiceInstallationError, utils, YAMLError, FatalException, COMMAND_LINE_ARGS,
-    CloudRotatingFileHandler
-)
 from datetime import datetime
+<<<<<<< HEAD
 from pid import PidFile, PidFileError
 from rich import print
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.text import Text
+=======
+from psycopg import OperationalError
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
-# ruamel YAML support
-from ruamel.yaml import YAML
-yaml = YAML()
+# DCSServerBot imports
+try:
+    from core import (
+        NodeImpl, ServiceRegistry, ServiceInstallationError, utils, YAMLError, FatalException, COMMAND_LINE_ARGS,
+        CloudRotatingFileHandler
+    )
+    from pid import PidFile, PidFileError
+    from rich import print
+    from rich.console import Console
+    from rich.logging import RichHandler
+    from rich.text import Text
+
+    # ruamel YAML support
+    from ruamel.yaml import YAML
+    yaml = YAML()
+except ModuleNotFoundError as ex:
+    import subprocess
+
+    print(f"Module {ex.name} is not installed, fixing ...")
+    subprocess.run([
+        sys.executable,
+        '-m', 'piptools', 'sync', 'requirements.txt'
+    ])
+    exit(-1)
 
 LOGLEVEL = {
     'DEBUG': logging.DEBUG,
@@ -62,10 +86,11 @@ class Main:
         fh = CloudRotatingFileHandler(os.path.join('logs', f'dcssb-{node}.log'), encoding='utf-8',
                                       maxBytes=config.get('logrotate_size', 10485760),
                                       backupCount=config.get('logrotate_count', 5))
-        fh.setLevel(logging.DEBUG)
+        fh.setLevel(LOGLEVEL[config.get('loglevel', 'DEBUG')])
         formatter = logging.Formatter(fmt=u'%(asctime)s.%(msecs)03d %(levelname)s\t%(message)s',
                                       datefmt='%Y-%m-%d %H:%M:%S')
-        formatter.converter = time.gmtime
+        if config.get('utc', True):
+            formatter.converter = time.gmtime
         fh.setFormatter(formatter)
         fh.doRollover()
 
@@ -75,21 +100,25 @@ class Main:
         # Change 3rd-party logging
         logging.getLogger(name='asyncio').setLevel(logging.WARNING)
         logging.getLogger(name='discord').setLevel(logging.ERROR)
+        logging.getLogger(name="eye3d").setLevel(logging.ERROR)
         logging.getLogger(name='git').setLevel(logging.WARNING)
         logging.getLogger(name='matplotlib').setLevel(logging.ERROR)
+        logging.getLogger(name="multipart").setLevel(logging.ERROR)
         logging.getLogger(name='PidFile').setLevel(logging.ERROR)
+        logging.getLogger(name='PIL').setLevel(logging.INFO)
         logging.getLogger(name='psycopg.pool').setLevel(logging.WARNING)
         logging.getLogger(name='pykwalify').setLevel(logging.CRITICAL)
 
         # Performance logging
         perf_logger = logging.getLogger(name='performance_log')
-        perf_logger.setLevel(logging.DEBUG)
+        perf_logger.setLevel(LOGLEVEL[config.get('loglevel', 'DEBUG')])
         perf_logger.propagate = False
         pfh = CloudRotatingFileHandler(os.path.join('logs', f'perf-{node}.log'), encoding='utf-8',
                                        maxBytes=config.get('logrotate_size', 10485760),
                                        backupCount=config.get('logrotate_count', 5))
         pff = logging.Formatter('%(asctime)s\t%(levelname)s\t%(message)s')
-        pff.converter = time.gmtime
+        if config.get('utc', True):
+            pff.converter = time.gmtime
         pfh.setFormatter(pff)
         pfh.doRollover()
         perf_logger.addHandler(pfh)
@@ -128,22 +157,9 @@ class Main:
                 "New update for DCSServerBot available!\nUse /node upgrade or enable autoupdate to apply it.")
 
         await self.node.register()
+        db_available = True
         async with ServiceRegistry(node=self.node) as registry:
-            if registry.services():
-                self.log.info("- Loading Services ...")
-            services = [registry.new(cls) for cls in registry.services().keys() if registry.can_run(cls)]
-            ret = await asyncio.gather(*[service.start() for service in services], return_exceptions=True)
-            for idx in range(0, len(ret)):
-                name = services[idx].name
-                if isinstance(ret[idx], (ServiceInstallationError, FatalException)):
-                    self.log.error(f"  - {ret[idx].__str__()}")
-                    self.log.error(f"  => Service {name} NOT started.")
-                    if isinstance(ret[idx], FatalException):
-                        return
-                else:
-                    self.log.debug(f"  => Service {name} started.")
-            if not self.node.master:
-                self.log.info("DCSServerBot AGENT started.")
+            self.log.info("DCSServerBot {} started.".format("MASTER" if self.node.master else "AGENT"))
             try:
                 while True:
                     # wait until the master changes
@@ -154,20 +170,21 @@ class Main:
                     # switch master
                     self.node.master = not self.node.master
                     if self.node.master:
-                        self.log.info("Taking over the Master node ...")
-                        for cls in registry.services().keys():
-                            if registry.master_only(cls):
-                                try:
-                                    await registry.new(cls).start()
-                                except ServiceInstallationError as ex:
-                                    self.log.error(f"  - {ex.__str__()}")
-                                    self.log.error(f"  => {cls.__name__} NOT loaded.")
-                            else:
-                                service = registry.get(cls)
-                                if service:
-                                    await service.switch()
+                        self.log.info("Taking over as the MASTER node ...")
+                        # start all master only services
+                        for cls in [x for x in registry.services().keys() if registry.master_only(x)]:
+                            try:
+                                await registry.new(cls).start()
+                            except ServiceInstallationError as ex:
+                                self.log.error(f"  - {ex.__str__()}")
+                                self.log.error(f"  => {cls.__name__} NOT loaded.")
+                        # now switch all others
+                        for cls in [x for x in registry.services().keys() if not registry.master_only(x)]:
+                            service = registry.get(cls)
+                            if service:
+                                await service.switch()
                     else:
-                        self.log.info("Second Master found, stepping back to Agent configuration.")
+                        self.log.info("Second MASTER found, stepping back to AGENT configuration.")
                         for cls in registry.services().keys():
                             if registry.master_only(cls):
                                 await registry.get(cls).stop()
@@ -175,16 +192,52 @@ class Main:
                                 service = registry.get(cls)
                                 if service:
                                     await service.switch()
-                    self.log.info(f"I am the {'Master' if self.node.master else 'Agent'} now.")
-            except Exception as ex:
-                self.log.exception(ex)
-                self.log.warning("Aborting the main loop.")
+                    self.log.info(f"I am the {'MASTER' if self.node.master else 'AGENT'} now.")
+            except OperationalError:
+                db_available = False
                 raise
             finally:
-                await self.node.unregister()
+                self.log.warning("Aborting the main loop ...")
+                if db_available:
+                    await self.node.unregister()
+
+
+def handle_exception(loop, context):
+    # Extract exception details from context
+    exception = context.get('exception')
+    message = context.get('message')
+
+    # Log detailed information
+    if exception:
+        log.error(f"Async error: {message}", exc_info=exception)
+    else:
+        log.error(f"Async error: {message}")
+
+    # Write to async_errors.log with task information
+    with open(os.path.join('logs', 'async_errors.log'), 'a') as f:
+        f.write(f"\n{'=' * 50}\n{datetime.now().isoformat()}: {message}\n")
+
+        # Dump all running tasks
+        f.write("\nRunning tasks:\n")
+        for task in asyncio.all_tasks(loop):
+            f.write(f"Task {task.get_name()}: {str(task)}\n")
+            # Get task stack
+            stack = task.get_stack()
+            if stack:
+                f.write('Stack:\n')
+                f.write(''.join(traceback.format_stack(stack[-1])))
+            f.write('\n')
+
+        if exception:
+            f.write("\nException details:\n")
+            traceback.print_exception(type(exception), exception, exception.__traceback__, file=f)
+        f.write(f"{'=' * 50}\n")
 
 
 async def run_node(name, config_dir=None, no_autoupdate=False) -> int:
+    loop = asyncio.get_running_loop()
+    loop.set_exception_handler(handle_exception)
+
     async with NodeImpl(name=name, config_dir=config_dir) as node:
         await Main(node, no_autoupdate=no_autoupdate).run()
         return node.rc
@@ -212,11 +265,12 @@ if __name__ == "__main__":
         exit(-2)
 
     # Check versions
-    if int(platform.python_version_tuple()[0]) < 3 or int(platform.python_version_tuple()[1]) < 9:
-        log.error("You need Python 3.9 or higher to run DCSServerBot (3.11 recommended)!")
+    if int(platform.python_version_tuple()[0]) < 3 or int(platform.python_version_tuple()[1]) < 10:
+        log.error("You need Python 3.10 or higher to run DCSServerBot!")
         exit(-2)
-    elif int(platform.python_version_tuple()[1]) == 9:
-        log.warning("Python 3.9 is outdated, you should consider upgrading it to 3.10 or higher.")
+
+    # Add certificates
+    os.environ["SSL_CERT_FILE"] = certifi.where()
 
     # Add certificates
     os.environ["SSL_CERT_FILE"] = certifi.where()
@@ -226,7 +280,15 @@ if __name__ == "__main__":
         from migrate import migrate_3
 
         migrate_3(node=args.node)
+<<<<<<< HEAD
+=======
+
+    fault_log = open(os.path.join('logs', 'fault.log'), 'w')
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
     try:
+        # enable faulthandler
+        faulthandler.enable(file=fault_log, all_threads=True)
+
         with PidFile(pidname=f"dcssb_{args.node}", piddir='.'):
             try:
                 rc = asyncio.run(run_node(name=args.node, config_dir=args.config, no_autoupdate=args.noupdate))
@@ -235,10 +297,9 @@ if __name__ == "__main__":
 
                 Install(node=args.node).install(config_dir=args.config, user='dcsserverbot', database='dcsserverbot')
                 rc = asyncio.run(run_node(name=args.node, config_dir=args.config, no_autoupdate=args.noupdate))
-    except PermissionError:
+    except PermissionError as ex:
+        log.error(f"There is a permission error: {ex}", exc_info=True)
         # do not restart again
-        log.error("There is a permission error.")
-        log.error(f"Did you run DCSServerBot as Admin before? If yes, delete dcssb_{args.node}.pid and try again.")
         exit(-2)
     except PidFileError:
         log.error(f"Process already running for node {args.node}!")
@@ -249,6 +310,7 @@ if __name__ == "__main__":
         # restart again (old handling)
         exit(-1)
     except asyncio.CancelledError:
+        log.warning("Main loop cancelled.")
         # do not restart again
         exit(-2)
     except (YAMLError, FatalException) as ex:
@@ -257,14 +319,16 @@ if __name__ == "__main__":
         # do not restart again
         exit(-2)
     except psycopg.OperationalError as ex:
-        log.error(f"Database Error: {ex}", exc_info=True)
-        input("Press any key to continue ...")
-        # do not restart again
-        exit(-2)
+        log.exception(ex)
+        # try again on Database errors
+        exit(-1)
     except SystemExit as ex:
         exit(ex.code)
     except:
         console.print_exception(show_locals=True, max_frames=1)
         # restart on unknown errors
         exit(-1)
+    finally:
+        log.info("DCSServerBot stopped.")
+        fault_log.close()
     exit(rc)

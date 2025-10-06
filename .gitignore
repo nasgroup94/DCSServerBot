@@ -12,8 +12,13 @@ Scripts/net/DCSServerBot/DCSServerBotConfig.lua
 /export/
 /plugins/test/
 /plugins/community/
+<<<<<<< HEAD
+=======
+/plugins/santaclaus/
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 /build/
 /fonts/
 /Music/
 /logs/
 /config/
+/.emmyrc.json

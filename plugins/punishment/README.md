@@ -27,10 +27,13 @@ DEFAULT:
     human: 12
     AI: 8
     reason: Friendly fire on a team member
-  - event: collision_hit    # if you hit another team member, you get 5 points, 1 if it was an AI.
+  - event: collision_hit    # If you hit another team member, you get 5 points, 1 if it was an AI.
     human: 5
     AI: 1
     reason: Colliding with a team member
+  - event: reslot           # If you re-slotted when being shot at, you get 30 points (you stole a kill)
+    default: 30
+    reason: Respawning when being shot at
   forgive: 30               # People can forgive others in-between of 30 seconds (default) with the .forgive in-game chat command.
   punishments:              # list of punishments, based on the users penalty points
   - points: 100             # we temp-ban the player when they reached 100 points.
@@ -76,7 +79,7 @@ You can add own events that you can use from inside the mission environment (see
 If you use the inline "action"-element, you can already trigger any action like a "move_to_spec" or "credits" when someone
 FFs or kills a team member.
 
-> ⚠️ >**Attention!**<br> 
+> [!NOTE]
 > Multiple events, that happen in-between a minute, are calculated as a single event. This is on purpose, to avoid too 
 > many punishments when a user unintentionally dropped a CBU onto something or strafed multiple targets in one run.
 
@@ -103,6 +106,15 @@ Weight punishment by flight hours. This will be the sum of flight hours over all
 ### Decay
 Penalty points will decrease over time. This is configured here.
 Decay can only be configured once, so there is no need for a server specific configuration. All other elements can be configured for every server instance differently.
+
+> [!WARNING]
+> If you change the decay function, the existing penalties might not decay anymore, depending on how you adjust the 
+> values. This is unfortunately an issue with how I implemented it.
+> You can reset your penalties in your database by using this SQL:
+> ```sql
+> DELETE FROM pu_events;
+> ```
+> After that, every new punishment will decay according to your new decay function.
 
 ## Discord Commands
 | Command      | Parameter | Channel | Role            | Description                                                                                                              |

@@ -7,6 +7,7 @@ import numpy as np
 import os
 import re
 import sys
+import traceback
 import uuid
 import warnings
 
@@ -26,6 +27,9 @@ from .__utils import parse_params
 
 if TYPE_CHECKING:
     from services.bot import DCSServerBot
+
+# ignore glyph warnings on MatPlotLib
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
 
 __all__ = [
     "ReportElement",
@@ -74,7 +78,7 @@ class ReportElement(ABC):
         self.apool = env.bot.apool
 
     @abstractmethod
-    async def render(self, **kwargs):
+    async def render(self, **kwargs) -> None:
         ...
 
 
@@ -83,12 +87,21 @@ class EmbedElement(ReportElement):
         super().__init__(env)
         self.embed = env.embed
 
-    def add_field(self, *, name, value, inline=True):
+    def add_field(self, *, name: str, value: str, inline=True) -> discord.Embed:
         if len(self.embed.fields) >= 25:
-            return
+            self.log.warning(f"Can't add field '{name}': too many fields in embed.")
+            return self.embed
+        if name is None or name == '':
+            name = '_ _'
+        else:
+            name = str(name)
         if len(name) > 256:
             name = name[:252] + ' ...'
-        if isinstance(value, str) and len(value) > 1024:
+        if value is None or value == '':
+            value = '_ _'
+        else:
+            value = str(value)
+        if len(value) > 1024:
             value = value[:1020] + ' ...'
         return self.embed.add_field(name=name or '_ _', value=value or '_ _', inline=inline)
 
@@ -170,8 +183,8 @@ class GraphElement(ReportElement):
     def __init__(self, env: ReportEnv, rows: int, cols: int, row: Optional[int] = 0, col: Optional[int] = 0,
                  colspan: Optional[int] = 1, rowspan: Optional[int] = 1, polar: Optional[bool] = False):
         super().__init__(env)
-        self.axes = plt.subplot2grid((rows, cols), (row, col), colspan=colspan, rowspan=rowspan, fig=self.env.figure,
-                                     polar=polar)
+        self.axes = plt.subplot2grid((rows, cols), (row, col), colspan=colspan, rowspan=rowspan,
+                                     fig=self.env.figure, polar=polar)
 
     @abstractmethod
     async def render(self, **kwargs):
@@ -179,17 +192,22 @@ class GraphElement(ReportElement):
 
 
 class MultiGraphElement(ReportElement):
-    def __init__(self, env: ReportEnv, rows: int, cols: int, params: list[dict]):
+    def __init__(self, env: ReportEnv, rows: int, cols: int, params: list[dict],
+                 wspace: float = 0.5, hspace: float = 0.5):
         super().__init__(env)
         self.axes = []
+        self.wspace = wspace
+        self.hspace = hspace
         for i in range(0, len(params)):
             colspan = params[i]['colspan'] if 'colspan' in params[i] else 1
             rowspan = params[i]['rowspan'] if 'rowspan' in params[i] else 1
             sharex = params[i]['sharex'] if 'sharex' in params[i] else False
-            self.axes.append(plt.subplot2grid((rows, cols), (params[i]['row'], params[i]['col']), colspan=colspan,
-                                              rowspan=rowspan, fig=self.env.figure,
+            self.axes.append(plt.subplot2grid((rows, cols), (params[i]['row'], params[i]['col']),
+                                              colspan=colspan, rowspan=rowspan, fig=self.env.figure,
                                               sharex=self.axes[-1] if sharex else None,
                                               polar=params[i].get('polar', False)))
+
+        plt.subplots_adjust(wspace=self.wspace, hspace=self.hspace)
 
     @abstractmethod
     async def render(self, **kwargs):
@@ -197,36 +215,58 @@ class MultiGraphElement(ReportElement):
 
 
 class Graph(ReportElement):
-    def __init__(self, env: ReportEnv):
+    def __init__(self, env: ReportEnv, width: int, height: int, cols: int, rows: int, elements: list[dict],
+                     wspace: float = 0.5, hspace: float = 0.5, dpi = 100, facecolor: Optional[str] = '#2C2F33'):
         super().__init__(env)
         plt.switch_backend('agg')
+        self.width = width
+        self.height = height
+        self.cols = cols
+        self.rows = rows
+        self.elements = elements
+        self.wspace = wspace
+        self.hspace = hspace
+        self.dpi = dpi
+        self.facecolor = facecolor
         self.plot_lock = asyncio.Lock()
 
     def _plot(self):
-        plt.subplots_adjust(hspace=0.5, wspace=0.5)
+        plt.subplots_adjust(wspace=self.wspace, hspace=self.hspace)
         self.env.filename = f'{uuid.uuid4()}.png'
+
+        # Save with adjusted dimensions while maintaining aspect ratio
         self.env.buffer = BytesIO()
-        warnings.filterwarnings("ignore", category=UserWarning, message=".*Glyph.*")
-        self.env.figure.savefig(self.env.buffer, format='png', bbox_inches='tight', facecolor='#2C2F33')
+        self.env.figure.savefig(
+            self.env.buffer,
+            format='png',
+            bbox_inches='tight',
+            dpi=self.dpi
+        )
         self.env.buffer.seek(0)
 
     async def _async_plot(self):
         async with self.plot_lock:
             self._plot()
 
-    async def render(self, width: int, height: int, cols: int, rows: int, elements: list[dict],
-                     facecolor: Optional[str] = None):
+    async def render(self, **kwargs):
         plt.style.use('dark_background')
-        plt.rcParams['axes.facecolor'] = '2C2F33'
+        plt.rcParams['axes.facecolor'] = self.facecolor
+        plt.rcParams['figure.facecolor'] = self.facecolor
+        plt.rcParams['savefig.facecolor'] = self.facecolor
         fonts = get_supported_fonts()
         if fonts:
             plt.rcParams['font.family'] = [f"Noto Sans {x}" for x in fonts] + ['sans-serif']
+<<<<<<< HEAD
         self.env.figure = plt.figure(figsize=(width, height))
+=======
+        self.env.figure = plt.figure(figsize=(self.width, self.height), dpi=self.dpi)
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         try:
-            if facecolor:
-                self.env.figure.set_facecolor(facecolor)
+            if self.facecolor:
+                self.env.figure.set_facecolor(self.facecolor)
+                self.env.figure.patch.set_facecolor(self.facecolor)
             tasks = []
-            for element in elements:
+            for element in self.elements:
                 if 'params' in element:
                     element_args = parse_params(self.env.params, element['params'])
                 else:
@@ -235,13 +275,13 @@ class Graph(ReportElement):
                 if not element_class and 'type' in element:
                     element_class = getattr(sys.modules[__name__], element['type'])
                 if element_class:
-                    # remove parameters, that are not in the class __init__ signature
+                    # remove the parameters that are not in the class __init__ signature
                     signature = inspect.signature(element_class.__init__).parameters.keys()
                     class_args = {name: value for name, value in element_args.items() if name in signature}
                     # instantiate the class
-                    element_class = element_class(self.env, rows, cols, **class_args)
+                    element_class = element_class(self.env, self.rows, self.cols, **class_args)
                     if isinstance(element_class, (GraphElement, MultiGraphElement)):
-                        # remove parameters, that are not in the render methods signature
+                        # remove the parameters that are not in the render methods signature
                         signature = inspect.signature(element_class.render).parameters.keys()
                         render_args = {name: value for name, value in element_args.items() if name in signature}
                         tasks.append(asyncio.create_task(element_class.render(**render_args)))
@@ -249,12 +289,16 @@ class Graph(ReportElement):
                         raise UnknownGraphElement(element['class'])
                 else:
                     raise ClassNotFound(element['class'])
-            # check for any exceptions and raise them
-            try:
-                await asyncio.gather(*tasks)
-            except NothingToPlot:
-                return
-            # only render the graph, if we don't have a rendered graph already attached as a file (image)
+            # check for any exceptions and print them
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    if not isinstance(result, NothingToPlot):
+                        self.log.error("Error in Graph:\n{stacktrace}".format(
+                            stacktrace=''.join(traceback.format_exception(result)))
+                        )
+
+            # only render the graph if we don't have a rendered graph already attached as a file (image)
             if not self.env.filename:
                 await self._async_plot()
             self.env.embed.set_image(url='attachment://' + os.path.basename(self.env.filename))
@@ -279,54 +323,69 @@ def _display_no_data(element: EmbedElement, no_data: Union[str, dict], inline: b
 
 
 class SQLField(EmbedElement):
-    async def render(self, sql: str, inline: Optional[bool] = True, no_data: Optional[Union[str, dict]] = None):
-        async with self.apool.connection() as conn:
-            async with conn.cursor(row_factory=dict_row) as cursor:
-                await cursor.execute(utils.format_string(sql, **self.env.params), self.env.params)
-                if cursor.rowcount > 0:
-                    row = await cursor.fetchone()
-                    name = list(row.keys())[0]
-                    value = row[name]
-                    if isinstance(value, datetime):
-                        value = value.strftime('%Y-%m-%d %H:%M')
-                    self.add_field(name=name, value=value, inline=inline)
-                else:
-                    if no_data:
-                        _display_no_data(self, no_data, inline)
+    async def render(self, sql: str, inline: Optional[bool] = True, no_data: Optional[Union[str, dict]] = None,
+                     on_error: Optional[dict] = None):
+        try:
+            async with self.apool.connection() as conn:
+                async with conn.cursor(row_factory=dict_row) as cursor:
+                    await cursor.execute(utils.format_string(sql, **self.env.params), self.env.params)
+                    if cursor.rowcount > 0:
+                        row = await cursor.fetchone()
+                        name = list(row.keys())[0]
+                        value = row[name]
+                        if isinstance(value, datetime):
+                            value = value.strftime('%Y-%m-%d %H:%M')
+                        self.add_field(name=name, value=value, inline=inline)
+                    else:
+                        if no_data:
+                            _display_no_data(self, no_data, inline)
+        except Exception as ex:
+            if on_error:
+                self.add_field(name=list(on_error.keys())[0],
+                               value=utils.format_string(str(list(on_error.values())[0]), ex=ex), inline=inline)
+            else:
+                raise
 
 
 class SQLTable(EmbedElement):
     async def render(self, sql: str, inline: Optional[bool] = True, no_data: Optional[Union[str, dict]] = None,
-                     ansi_colors: Optional[bool] = False):
-        async with self.apool.connection() as conn:
-            async with conn.cursor(row_factory=dict_row) as cursor:
-                await cursor.execute(utils.format_string(sql, **self.env.params), self.env.params)
-                if cursor.rowcount == 0:
-                    if no_data:
-                        _display_no_data(self, no_data, False)
-                    return
-                header = None
-                cols = []
-                elements = 0
-                async for row in cursor:
-                    elements = len(row)
-                    if not header:
-                        header = list(row.keys())
-                    values = list(row.values())
+                     ansi_colors: Optional[bool] = False, on_error: Optional[dict] = None):
+        try:
+            async with self.apool.connection() as conn:
+                async with conn.cursor(row_factory=dict_row) as cursor:
+                    await cursor.execute(utils.format_string(sql, **self.env.params), self.env.params)
+                    if cursor.rowcount == 0:
+                        if no_data:
+                            _display_no_data(self, no_data, False)
+                        return
+                    header = None
+                    cols = []
+                    elements = 0
+                    async for row in cursor:
+                        elements = len(row)
+                        if not header:
+                            header = list(row.keys())
+                        values = list(row.values())
+                        for i in range(0, elements):
+                            if isinstance(values[i], datetime):
+                                value = values[i].strftime('%Y-%m-%d %H:%M')
+                            else:
+                                value = str(values[i])
+                            if len(cols) <= i:
+                                cols.append(('```ansi\n' if ansi_colors else '') + value + '\n')
+                            else:
+                                cols[i] += value + '\n'
                     for i in range(0, elements):
-                        if isinstance(values[i], datetime):
-                            value = values[i].strftime('%Y-%m-%d %H:%M')
-                        else:
-                            value = str(values[i])
-                        if len(cols) <= i:
-                            cols.append(('```ansi\n' if ansi_colors else '') + value + '\n')
-                        else:
-                            cols[i] += value + '\n'
-                for i in range(0, elements):
-                    self.add_field(name=header[i], value=cols[i] + ('```' if ansi_colors else ''), inline=inline)
-                if elements % 3 and inline:
-                    for i in range(0, 3 - elements % 3):
-                        self.add_field(name='_ _', value='_ _')
+                        self.add_field(name=header[i], value=cols[i] + ('```' if ansi_colors else ''), inline=inline)
+                    if elements % 3 and inline:
+                        for i in range(0, 3 - elements % 3):
+                            self.add_field(name='_ _', value='_ _')
+        except Exception as ex:
+            if on_error:
+                for key, value in on_error.items():
+                    self.add_field(name=key, value=utils.format_string(value, ex=ex), inline=inline)
+            else:
+                raise
 
 
 class BarChart(GraphElement):
@@ -359,7 +418,7 @@ class BarChart(GraphElement):
             if self.rotate_labels > 0:
                 for label in self.axes.get_xticklabels():
                     label.set_rotation(self.rotate_labels)
-                    label.set_ha('right')
+                    label.set_horizontalalignment('right')
             if self.bar_labels:
                 for c in self.axes.containers:
                     self.axes.bar_label(c, fmt='%.1f h' if self.is_time else '%.1f', label_type='edge', padding=2)

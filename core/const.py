@@ -12,12 +12,14 @@ __all__ = [
     "QFE_TO_QNH_MB",
     "WEEKDAYS",
     "MONTH",
+    "TRAFFIC_LIGHTS",
     "SAVED_GAMES",
     "DEFAULT_TAG"
 ]
 
 METER_IN_FEET = 3.28084
 METER_PER_SECOND_IN_KNOTS = 1.94384
+METERS_IN_SM = 1609.344
 MMHG_IN_INHG = 0.0393701
 MMHG_IN_HPA = 1.333224
 QFE_TO_QNH_INHG = 0.00107777777777778
@@ -47,6 +49,12 @@ MONTH = {
     10: 'October',
     11: 'November',
     12: 'December'
+}
+
+TRAFFIC_LIGHTS = {
+    "red": "https://assets.digital.cabinet-office.gov.uk/media/559fbe1940f0b6156700004d/traffic-light-red.jpg",
+    "amber": "https://assets.digital.cabinet-office.gov.uk/media/559fbe48ed915d1592000048/traffic-light-amber.jpg",
+    "green": "https://assets.digital.cabinet-office.gov.uk/media/559fbe3e40f0b6156700004f/traffic-light-green.jpg"
 }
 
 SAVED_GAMES = os.path.expandvars(os.path.join('%USERPROFILE%', 'Saved Games'))

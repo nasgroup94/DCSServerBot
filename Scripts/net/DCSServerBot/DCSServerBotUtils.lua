@@ -2,7 +2,6 @@ local base   		= _G
 
 module('DCSServerBotUtils')
 
-local loadfile 		= base.loadfile
 local net			= base.net
 local package		= base.package
 local pairs			= base.pairs
@@ -21,8 +20,6 @@ local Tools     	= require('tools')
 local U 			= require('me_utilities')
 local config		= require('DCSServerBotConfig')
 
-local JSON = loadfile(lfs.currentdir() .. "Scripts\\JSON.lua")()
-
 package.path  = package.path..";.\\LuaSocket\\?.lua;"
 package.cpath = package.cpath..";.\\LuaSocket\\?.dll;"
 local socket = require("socket")
@@ -37,8 +34,7 @@ function sendBotTable(tbl, channel)
 	end
 	tbl.server_name = server_name
 	tbl.channel = channel or "-1"
-	local tbl_json_txt = JSON:encode(tbl)
-	socket.try(UDPSendSocket:sendto(tbl_json_txt, config.BOT_HOST, config.BOT_PORT))
+	socket.try(UDPSendSocket:sendto(net.lua2json(tbl), config.BOT_HOST, config.BOT_PORT))
 end
 
 function loadSettingsRaw()
@@ -179,7 +175,32 @@ function getIP(s)
     return nil
 end
 
+<<<<<<< HEAD
 function isDynamic(id)
 	local _, _slot, _ = getMulticrewAllParameters(id)
 	return _slot > 1000000
+=======
+function isDynamic(slotId)
+    if not(string.find(slotId, 'red') or string.find(slotId, 'blue')) then
+        -- Player took model
+        _master_slot = slotId
+        _sub_slot = 0
+
+        if (not tonumber(slotId)) then
+            -- If this is multiseat slot parse master slot and look for seat number
+            _t_start, _t_end = string.find(slotId, '_%d+')
+
+            if _t_start then
+                -- This is co-player
+                _master_slot = tonumber(string.sub(slotId, 0 , _t_start -1 ))
+                _sub_slot = tonumber(string.sub(slotId, _t_start + 1, _t_end ))
+            end
+        else
+            _master_slot = tonumber(slotId)
+        end
+        return _master_slot > 1000000
+    else
+        return false
+    end
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 end

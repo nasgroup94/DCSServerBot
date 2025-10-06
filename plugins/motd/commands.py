@@ -2,7 +2,7 @@ import asyncio
 import discord
 import random
 
-from core import Plugin, PluginRequiredError, utils, Server, Player, TEventListener, Status, Coalition, \
+from core import Plugin, PluginRequiredError, utils, Server, Player, Status, Coalition, \
     PluginInstallationError, command
 from discord import app_commands
 from discord.ext import tasks
@@ -12,9 +12,9 @@ from typing import Optional, Type, Literal, AsyncGenerator
 from .listener import MOTDListener
 
 
-class MOTD(Plugin):
+class MOTD(Plugin[MOTDListener]):
 
-    def __init__(self, bot: DCSServerBot, eventlistener: Type[TEventListener] = None):
+    def __init__(self, bot: DCSServerBot, eventlistener: Type[MOTDListener] = None):
         super().__init__(bot, eventlistener)
         if not self.locals:
             raise PluginInstallationError(reason=f"No {self.plugin_name}.yaml file found!", plugin=self.plugin_name)
@@ -146,17 +146,17 @@ class MOTD(Plugin):
                 if server.status != Status.RUNNING:
                     if handles:
                         await self._cancel_handles(server)
-                    return
+                    continue
                 elif handles:
-                    return
-                config = config['nudge']
+                    continue
+                config: dict = config['nudge']
                 self.nudge_active[server_name] = {}
                 if isinstance(config, list):
                     for c in config:
-                        t = self.loop.call_later(c['delay'], partial(process_nudge, server, c))
+                        t = self.loop.call_later(int(c['delay']), partial(process_nudge, server, c))
                         self.nudge_active[server_name][c['delay']] = t
                 else:
-                    t = self.loop.call_later(config['delay'], partial(process_nudge, server, config))
+                    t = self.loop.call_later(int(config['delay']), partial(process_nudge, server, config))
                     self.nudge_active[server_name][config['delay']] = t
         except Exception as ex:
             self.log.exception(ex)

@@ -1,15 +1,18 @@
-import luadata
+from __future__ import annotations
+
 import os
 import psycopg
+<<<<<<< HEAD
 import shutil
+=======
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
 from core import Instance, InstanceBusyError, Status, utils, DataObjectFactory
-from dataclasses import dataclass
-from typing import Optional, TYPE_CHECKING
-
 from core.autoexec import Autoexec
 from core.const import SAVED_GAMES
 from core.utils.helper import SettingsDict
+from dataclasses import dataclass
+from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core import Server
@@ -27,17 +30,45 @@ class InstanceImpl(Instance):
         self.missions_dir = os.path.expandvars(self.locals.get('missions_dir', os.path.join(self.home, 'Missions')))
         os.makedirs(self.missions_dir, exist_ok=True)
         os.makedirs(os.path.join(self.missions_dir, 'Scripts'), exist_ok=True)
+        # check / fix autoexec.cfg
         autoexec = Autoexec(instance=self)
-        if self.locals.get('webgui_port'):
-            autoexec.webgui_port = int(self.locals.get('webgui_port'))
+        # check WebGUI port
+        webgui_port = self.locals.get('webgui_port')
+        if webgui_port and webgui_port != autoexec.webgui_port:
+            autoexec.webgui_port = webgui_port
         else:
             self.locals['webgui_port'] = autoexec.webgui_port or 8088
+
+        dcs_config = self.node.locals.get('DCS', {})
+        # check UPnP
+        net = {}
+        if autoexec.net:
+            net |= autoexec.net
+        dirty = False
+        use_upnp = dcs_config.get('use_upnp', self.node.locals.get('use_upnp', True))
+        if use_upnp != net.get('use_upnp', True):
+            net['use_upnp'] = use_upnp
+            dirty |= True
+        # removed as of DCS 2.9.19
+#        # set new security settings (as of DCS 2.9.18)
+#        allow_unsafe_api = dcs_config.get('allow_unsafe_api', ["userhooks"])
+#        allow_dostring_in = dcs_config.get('allow_dostring_in', ["server", "mission"])
+#        if set(allow_unsafe_api) != set(net.get('allow_unsafe_api', set())):
+#            net['allow_unsafe_api'] = allow_unsafe_api
+#            dirty |= True
+#        if set(allow_dostring_in) != net.get('allow_dostring_in', set()):
+#            net['allow_dostring_in'] = allow_dostring_in
+#            dirty |= True
+        if dirty:
+            autoexec.net = net
+
         server_name = None
         settings_path = os.path.join(self.home, 'Config', 'serverSettings.lua')
         if os.path.exists(settings_path):
             settings = SettingsDict(self, settings_path, root='cfg')
-            if self.locals.get('dcs_port'):
-                settings['port'] = int(self.locals['dcs_port'])
+            dcs_port = self.locals.get('dcs_port')
+            if dcs_port:
+                settings['port'] = dcs_port
             else:
                 self.locals['dcs_port'] = settings.get('port', 10308)
             server_name = settings.get('name', 'DCS Server') if settings else None
@@ -49,10 +80,13 @@ class InstanceImpl(Instance):
         try:
             with self.pool.connection() as conn:
                 with conn.transaction():
+<<<<<<< HEAD
                     # clean up old server name entries to avoid conflicts
                     conn.execute("""
                         DELETE FROM instances WHERE server_name = %s
                     """, (server_name, ))
+=======
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                     conn.execute("""
                         INSERT INTO instances (node, instance, port, server_name)
                         VALUES (%s, %s, %s, %s) 
@@ -67,15 +101,15 @@ class InstanceImpl(Instance):
     def home(self) -> str:
         return os.path.expandvars(self.locals.get('home', os.path.join(SAVED_GAMES, self.name)))
 
-    def update_server(self, server: Optional["Server"] = None):
+    def update_server(self, server: Optional[Server] = None):
         with self.pool.connection() as conn:
             with conn.transaction():
                 conn.execute("""
                     UPDATE instances SET server_name = %s, last_seen = (now() AT TIME ZONE 'utc') 
                     WHERE node = %s AND instance = %s
-                """, (server.name if server else None, self.node.name, self.name))
+                """, (server.name if server and server.name != 'n/a' else None, self.node.name, self.name))
 
-    def set_server(self, server: Optional["Server"]):
+    def set_server(self, server: Optional[Server]):
         if self._server and self._server.status not in [Status.UNREGISTERED, Status.SHUTDOWN]:
             raise InstanceBusyError()
         self._server = server
@@ -90,6 +124,8 @@ class InstanceImpl(Instance):
         self.update_server(server)
 
     def prepare(self):
+        if 'DCS' not in self.node.locals:
+            return
         # desanitisation of Slmod (if there)
         if self.node.locals['DCS'].get('desanitize', True):
             # check for SLmod and desanitize its MissionScripting.lua
@@ -99,24 +135,3 @@ class InstanceImpl(Instance):
                 if os.path.exists(filename):
                     utils.desanitize(self, filename)
                     break
-        # Profanity filter
-        if self.server and self.server.locals.get('profanity_filter', False):
-            language = self.node.config.get('language', 'en')
-            wordlist = os.path.join(self.node.config_dir, 'profanity.txt')
-            if not os.path.exists(wordlist):
-                shutil.copy2(os.path.join('samples', 'wordlists', f"{language}.txt"), wordlist)
-            with open(wordlist, mode='r', encoding='utf-8') as wl:
-                words = [x.strip() for x in wl.readlines() if not x.startswith('#')]
-            targetfile = os.path.join(os.path.expandvars(self.node.locals['DCS']['installation']), 'Data', 'censor.lua')
-            bakfile = targetfile.replace('.lua', '.bak')
-            if not os.path.exists(bakfile):
-                shutil.copy2(targetfile, bakfile)
-            with open(targetfile, mode='wb') as outfile:
-                outfile.write((f"{language.upper()} = " + luadata.serialize(
-                    words, indent='\t', indent_level=0)).encode('utf-8'))
-        else:
-            targetfile = os.path.join(os.path.expandvars(self.node.locals['DCS']['installation']), 'Data', 'censor.lua')
-            bakfile = targetfile.replace('.lua', '.bak')
-            if os.path.exists(bakfile):
-                shutil.copy2(bakfile, targetfile)
-                os.remove(bakfile)

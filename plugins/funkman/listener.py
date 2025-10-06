@@ -3,28 +3,26 @@ import discord
 import sys
 import uuid
 import matplotlib.figure
-import os
 
-from core import EventListener, Plugin, Server, event, Player, PersistentReport, Channel, get_translation
+from core import EventListener, Server, event, Player, PersistentReport, Channel, get_translation
 from io import BytesIO
 from matplotlib import pyplot as plt
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
 
 from .const import StrafeQuality, BombQuality
+
+if TYPE_CHECKING:
+    from .commands import FunkMan
 
 _ = get_translation(__name__.split('.')[1])
 
 
-class FunkManEventListener(EventListener):
+class FunkManEventListener(EventListener["FunkMan"]):
 
-    def __init__(self, plugin: Plugin):
+    def __init__(self, plugin: "FunkMan"):
         super().__init__(plugin)
         self.config = self.get_config()
-        path = self.config['install']
-        if not os.path.exists(path):
-            self.log.error(f"FunkMan install path is not correct in your {self.plugin_name}.yaml! "
-                           f"FunkMan will not work.")
-            return
+        path = self.config.get('install')
         sys.path.append(path)
         from funkman.utils.utils import _GetVal
         self.funkplot = None
@@ -149,8 +147,7 @@ class FunkManEventListener(EventListener):
         channel = self.bot.get_channel(int(config.get('CHANNELID_MAIN', -1)))
         if not channel:
             return
-        # noinspection PyAsyncCall
-        asyncio.create_task(channel.send(data['text'], delete_after=self.config.get('delete_after')))
+        await channel.send(data['text'], delete_after=self.config.get('delete_after'))
 
     @event(name="moose_bomb_result")
     async def moose_bomb_result(self, server: Server, data: dict) -> None:
@@ -164,7 +161,6 @@ class FunkManEventListener(EventListener):
                         VALUES (%s, %s, %s, %s, %s, %s)
                     """, (server.mission_id, player.ucid, player.unit_type, data.get('rangename', 'n/a'),
                           data['distance'], BombQuality[data['quality']].value))
-            # noinspection PyAsyncCall
             asyncio.create_task(self.update_rangeboard(server, 'bomb'))
         channel = self.bot.get_channel(int(config.get('CHANNELID_RANGE', -1)))
         if not channel:
@@ -173,7 +169,6 @@ class FunkManEventListener(EventListener):
         if not fig:
             self.log.error("Bomb result could not be plotted (due to missing data?)")
             return
-        # noinspection PyAsyncCall
         asyncio.create_task(self.send_fig(fig, channel))
 
     @event(name="moose_strafe_result")
@@ -188,7 +183,6 @@ class FunkManEventListener(EventListener):
                         VALUES (%s, %s, %s, %s, %s, %s)
                     """, (server.mission_id, player.ucid, player.unit_type, data.get('rangename', 'n/a'),
                           data['strafeAccuracy'], StrafeQuality[data['roundsQuality'].replace(' ', '_')].value if not data.get('invalid', False) else None))
-            # noinspection PyAsyncCall
             asyncio.create_task(self.update_rangeboard(server, 'strafe'))
         channel = self.bot.get_channel(int(config.get('CHANNELID_RANGE', -1)))
         if not channel:
@@ -197,7 +191,6 @@ class FunkManEventListener(EventListener):
         if not fig:
             self.log.error("Strafe result could not be plotted (due to missing data?)")
             return
-        # noinspection PyAsyncCall
         asyncio.create_task(self.send_fig(fig, channel))
 
     @event(name="moose_lso_grade")
@@ -215,8 +208,7 @@ class FunkManEventListener(EventListener):
             with buffer:
                 embed = self.create_lso_embed(data)
                 embed.set_image(url=f"attachment://{filename}")
-                # noinspection PyAsyncCall
-                asyncio.create_task(channel.send(embed=embed, file=discord.File(fp=buffer, filename=filename),
-                                                 delete_after=self.config.get('delete_after')))
+                await channel.send(embed=embed, file=discord.File(fp=buffer, filename=filename),
+                                   delete_after=self.config.get('delete_after'))
         except (ValueError, TypeError):
-            self.log.warning("No trapsheet data received from DCS!")
+            self.log.warning("No or invalid trapsheet data received from DCS!")

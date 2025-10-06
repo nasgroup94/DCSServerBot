@@ -1,10 +1,10 @@
 import asyncio
-from zoneinfo import ZoneInfo
 
-from core import const, report, Status, Server, utils, ServiceRegistry, Plugin, Side
+from core import const, report, Status, Server, utils, ServiceRegistry, Plugin, Side, cache_with_expiration
 from datetime import datetime, timedelta, timezone
 from services.bot import BotService
 from typing import Optional, cast
+from zoneinfo import ZoneInfo
 
 STATUS_IMG = {
     Status.LOADING:
@@ -18,9 +18,9 @@ STATUS_IMG = {
     Status.SHUTTING_DOWN:
         'https://github.com/Special-K-s-Flightsim-Bots/DCSServerBot/blob/master/images/shutting_down_256.png?raw=true',
     Status.SHUTDOWN:
-        'https://github.com/Special-K-s-Flightsim-Bots/DCSServerBot/blob/master/images/stop_256.png?raw=true',
+        'https://github.com/Special-K-s-Flightsim-Bots/DCSServerBot/blob/development/images/shutdown_256.png?raw=true',
     Status.UNREGISTERED:
-        'https://github.com/Special-K-s-Flightsim-Bots/DCSServerBot/blob/master/images/stop_256.png?raw=true'
+        'https://github.com/Special-K-s-Flightsim-Bots/DCSServerBot/blob/development/images/unregistered_256.png?raw=true'
 }
 
 
@@ -39,12 +39,14 @@ class Init(report.EmbedElement):
 
 class ServerInfo(report.EmbedElement):
 
-    async def render(self, server: Server, show_password: Optional[bool] = True):
+    async def render(self, server: Server, show_password: Optional[bool] = True, host: Optional[str] = None,):
+        if not server.locals.get('show_passwords', True):
+            show_password = False
         name = value = ""
         if server.node.public_ip:
             name = "Server-IP / Port"
-            value = f"{server.node.public_ip}:{server.settings['port']}"
-        if server.settings['password']:
+            value = f"{host or server.node.public_ip}:{server.settings.get('port', 10308)}"
+        if server.settings.get('password', ''):
             if value:
                 value += '\n\n**Password**\n'
             else:
@@ -80,20 +82,36 @@ class ServerInfo(report.EmbedElement):
             else:
                 value += f"\n\n**Runtime**\n{timedelta(seconds=uptime)}"
             self.add_field(name='Date / Time in Mission', value=value)
+
+        # add a ruler at the bottom
+        await report.Ruler(self.env).render()
+
         if server.maintenance:
             footer = 'SERVER IS IN MAINTENANCE MODE, SCHEDULER WILL NOT WORK!\n\n'
         else:
             footer = ''
-        if server.dcs_version:
-            footer += f'DCS {server.dcs_version} | DCSServerBot {self.node.bot_version}.{self.node.sub_version} | '
+        if server.node.dcs_version:
+            footer += f'DCS {server.node.dcs_version} | DCSServerBot {self.node.bot_version}.{self.node.sub_version} | '
         self.embed.set_footer(text=footer)
+
+
+@cache_with_expiration(expiration=300)
+async def get_visibility(server: Server) -> int:
+    try:
+        ret = await server.send_to_dcs_sync({
+            "command": "getFog"
+        })
+        if ret['visibility']:
+            return int(ret['visibility'])
+    except (TimeoutError, asyncio.TimeoutError):
+        pass
+    return 0
 
 
 class WeatherInfo(report.EmbedElement):
 
     async def render(self, server: Server):
         if server.current_mission and server.current_mission.weather:
-            await report.Ruler(self.env).render()
             weather = server.current_mission.weather
             value = f"{weather['season']['temperature']:.1f} °C"
             value += "\n\n**QNH (QFF)**\n{:.2f} inHg\n{} hPa".format(
@@ -104,6 +122,8 @@ class WeatherInfo(report.EmbedElement):
                 if 'preset' in clouds:
                     value = clouds['preset']['readableName'][5:].split('\n')[0].replace('/', '/\n')
                     value += f"\n\n**Cloudbase**\n{int(clouds['base'] * const.METER_IN_FEET + 0.5):,} ft"
+                elif 'density' in clouds and clouds['density'] == 0:
+                    value = "Clear"
                 else:
                     value = "Dynamic"
                     value += ("\n\n**Cloudbase**\n"
@@ -116,9 +136,16 @@ class WeatherInfo(report.EmbedElement):
                 self.add_field(name='Weather', value='Dynamic\n**Clouds**\nn/a')
 
             visibility = weather['visibility']['distance']
+<<<<<<< HEAD
             if weather['enable_fog'] is True:
                 visibility = int(weather['fog']['visibility'] * const.METER_IN_FEET + 0.5)
             value = "{:,} ft".format(int(visibility)) if visibility < 30000 else "10 km / 6 SM (+)"
+=======
+            if server.status == Status.RUNNING:
+                visibility = (await get_visibility(server)) or visibility
+            value = "{:,} m / {:.2f} SM".format(int(visibility), visibility / const.METERS_IN_SM) \
+                if visibility < 30000 else "10 km / 6 SM (+)"
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
             value += ("\n\n**Wind**\n"
                       "\u2002Ground: {}° / {} kts\n\u20026600 ft: {}° / {} kts\n26000 ft: {}° / {} kts").format(
                 int(weather['wind']['atGround']['dir'] + 180) % 360,
@@ -129,6 +156,27 @@ class WeatherInfo(report.EmbedElement):
                 int(weather['wind']['at8000']['speed'] * const.METER_PER_SECOND_IN_KNOTS + 0.5))
             self.add_field(name='Visibility', value=value)
 
+            # add a ruler at the bottom
+            await report.Ruler(self.env).render()
+
+
+class IntegrityCheck(report.EmbedElement):
+
+    async def render(self, server: Server):
+        values = []
+        if not server.settings.get('advanced', {}).get('allow_trial_only_clients', False):
+            values.append("No Trial Clients")
+        if server.settings.get('require_pure_clients', True):
+            values.append("Pure Clients Required")
+        if server.settings.get('require_pure_scripts', False):
+            values.append("Pure Scripts Required")
+        if server.settings.get('require_pure_models', True):
+            values.append("Pure Models Required")
+        if server.settings.get('require_pure_textures', True):
+            values.append("Pure Textures Required")
+        if values:
+            self.add_field(name='Client Limits', value='\n'.join([f":shield: {x}" for x in values]))
+
 
 class ExtensionsInfo(report.EmbedElement):
 
@@ -137,12 +185,13 @@ class ExtensionsInfo(report.EmbedElement):
         # we don't have any extensions loaded (yet)
         if not extensions:
             return
-        await report.Ruler(self.env).render()
         footer = self.embed.footer.text or ''
         for ext in extensions:
             self.add_field(name=ext['name'], value=ext['value'])
         footer += " | ".join([f"{ext['name']} v{ext['version']}" for ext in extensions if ext.get('version')])
         self.embed.set_footer(text=footer)
+        # add a ruler at the bottom
+        await report.Ruler(self.env).render()
 
 
 class ScheduleInfo(report.EmbedElement):
@@ -153,7 +202,10 @@ class ScheduleInfo(report.EmbedElement):
         if scheduler:
             config = scheduler.get_config(server)
             if 'schedule' in config:
-                await report.Ruler(self.env).render(text="This server runs on the following schedule:")
+                if (len(config['schedule']) == 1 and list(config['schedule'].keys())[0] == '00-24' and
+                        config['schedule']['00-24'] == 'YYYYYYY'):
+                    return
+                self.add_field(name="This server runs on the following schedule:", value='_ _', inline=False)
                 value = ''
                 now = datetime.now()
                 tz = now.astimezone().tzinfo
@@ -182,18 +234,22 @@ class ScheduleInfo(report.EmbedElement):
                 self.add_field(name='_ _', value='✅ = Server running\n'
                                                  '❌ = Server not running\n'
                                                  '☑️ = Server shuts down without players')
+                # add a ruler at the bottom
+                await report.Ruler(self.env).render()
 
 
 class Footer(report.EmbedElement):
     async def render(self, server: Server):
-        await report.Ruler(self.env).render()
         text = self.embed.footer.text or ''
         for listener in self.bot.eventListeners:
             # noinspection PyUnresolvedReferences
             if (type(listener).__name__ == 'UserStatisticsEventListener') and \
                     (server.name in listener.active_servers):
-                text += '\n\nUser statistics are enabled for this server.'
+                text += '\n\n- User statistics are enabled.'
                 break
+        current_mission = await server.get_current_mission_file()
+        if current_mission and current_mission.endswith('.sav'):
+            text += '\n- Mission persistence is enabled.'
         text += f'\n\nLast updated: {datetime.now(timezone.utc):%y-%m-%d %H:%M:%S UTC}'
         self.embed.set_footer(text=text)
 
@@ -207,14 +263,14 @@ class All(report.EmbedElement):
             if server.status == Status.SHUTDOWN:
                 continue
             name = f"{server.name} [{len(server.players) + 1}/{server.settings.get('maxPlayers', 16)}]"
-            value = f"IP/Port:  {server.node.public_ip}:{server.settings['port']}\n"
+            value = f"IP/Port:  {server.node.public_ip}:{server.settings.get('port', 10308)}\n"
             if server.current_mission:
                 value += f"Mission:  {server.current_mission.name}\n"
                 value += f"Uptime:   {utils.convert_time(int(server.current_mission.mission_time))}\n"
             if server.restart_time and not server.maintenance:
                 restart_in = int((server.restart_time - datetime.now(timezone.utc)).total_seconds())
                 value += f"Restart:  in {utils.format_time(restart_in)}\n"
-            if server.settings['password']:
+            if server.settings.get('password', ''):
                 name = '🔐 ' + name
                 value += f"Password: {server.settings['password']}"
             else:

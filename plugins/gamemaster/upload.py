@@ -3,24 +3,42 @@ import discord
 import json
 import os
 
+<<<<<<< HEAD
 from core import utils, get_translation, Plugin, Server, ServerUploadHandler
 from jsonschema.exceptions import ValidationError
 from jsonschema.validators import validate
 from typing import Optional
+=======
+from core import utils, get_translation, Server, ServerUploadHandler
+from jsonschema.exceptions import ValidationError
+from jsonschema.validators import validate
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .commands import GameMaster
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
 _ = get_translation(__name__.split('.')[1])
 
 
 class GameMasterUploadHandler(ServerUploadHandler):
 
+<<<<<<< HEAD
     def __init__(self, plugin: Plugin, server: Server, message: discord.Message, pattern: list[str]):
+=======
+    def __init__(self, plugin: "GameMaster", server: Server, message: discord.Message, pattern: list[str]):
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         super().__init__(server, message, pattern)
         self.plugin = plugin
         self.log = plugin.log
 
     async def create_embed(self, att: discord.Attachment) -> None:
         async with aiohttp.ClientSession() as session:
+<<<<<<< HEAD
             async with session.get(att.url) as response:
+=======
+            async with session.get(att.url, proxy=self.node.proxy, proxy_auth=self.node.proxy_auth) as response:
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                 if response.status != 200:
                     await self.channel.send(_('Error {} while reading JSON file!').format(response.status))
                     return

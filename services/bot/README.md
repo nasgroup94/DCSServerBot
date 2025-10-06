@@ -10,7 +10,8 @@ requirements:
 ```yaml
 token: SECRET DISCORD TOKEN COMES HERE          # Your TOKEN, as received from the discord developer portal.
 owner: 1122334455667788                         # The ID of your bot user. Right click, select "Copy User ID".
-automatch: true                                 # Use the bots auto-matching functionality (see below), default is true.
+command_prefix: .                               # Optional: only used for the commands plugin       
+automatch: true                                 # Use the bots auto-matching functionality (see below), default is false.
 autoban: false                                  # Use the bots auto-ban functionality (see below), default is false.
 autorole:                                       # Automatically give roles to people, depending on conditions (see below). The roles need to be set up in your Discord server.
   on_join: Member                               # Give anyone the "Member" role, if they join your Discord.
@@ -39,9 +40,14 @@ roles:                                          # Roles mapping. The bot uses in
   - @everyone
 ```
 
-> ⚠️ **Attention!**<br>
+> [!CAUTION]
 > Never ever share your Discord TOKEN with anyone. If you plan to check in your configuration to GitHub, don't do that
 > for the Discord TOKEN. GitHub will automatically revoke it from Discord for security reasons.
+
+> [!TIP]
+> The bot will remove the Discord token on the first startup from your bot.yaml.<br>
+> If you want to replace the token later, re-add the line into your bot.yaml and DCSServerBot will replace the 
+> internal token with this one.
 
 ## Non-Discord Installations
 DCSServerBot is made for Discord and I highly recommend using it with that. Nevertheless, there are people that do not
@@ -64,7 +70,6 @@ roles:
 The bot will then start without any Discord integration and allow the players listed in your bot.yaml to run the 
 respective commands that are allowed for this role.
 
-> ⚠️ **Attention!**<br>
+> [!IMPORTANT]
 > You might get some warnings and errors because of missing information like channels etc. in your bot.
-> And you are limited with many plugins, meaning, you can not use any plugin that is meant to post information into
-> channels only like FunkMan or Greenieboard.
+> You also cannot use any plugin only meant to display data in Discord like FunkMan or Greenieboard.

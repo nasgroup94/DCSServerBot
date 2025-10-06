@@ -1,5 +1,12 @@
 schema;trackfile_schema:
   type: map
+<<<<<<< HEAD
   mapping:
     enabled: {type: bool}
     target: {type: str}
+=======
+  nullable: false
+  mapping:
+    enabled: {type: bool, nullable: false}
+    target: {type: str, required: true, nullable: false, range: {min: 1}}
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b

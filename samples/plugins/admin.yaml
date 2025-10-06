@@ -13,21 +13,17 @@ DEFAULT:  # The DEFAULT section is valid for all your servers
   - label: DCSServerBot Logs
     directory: logs
     pattern: 'dcssb-*.log*'
-  # This is for your missions. If you use a central mission directory, you might want to amend that.
+  # This is for your missions. The bot knows where all your missions are, so nothing more to do here.
   - label: Missions
-    directory: '{server.instance.home}\Missions'
-    pattern: '*.miz'
   # This is for DCS Trackfiles. Please keep in mind that these files can get really huge
   - label: Trackfiles
     directory: '{server.instance.home}\Tracks'
     pattern: '*.trk'
-    target: 'G:\My Drive\Tracks' # download the files to a specific directory
   # This is for Tacview. If you use an instance-specific tacview directory, this needs to be changed.
   # Player-specific files aren't supported yet for download. See auto-upload to channels in the Tacview-extension.
   - label: Tacview
     directory: '%USERPROFILE%\Documents\Tacview'
     pattern: 'Tacview-*.acmi'
-    target: '<id:1122334455667788>' # download the files to a specific channel
   # If you decided to use dedicated chat logs per server (default), this is where you can find them.
   - label: Chat Logs
     directory: logs

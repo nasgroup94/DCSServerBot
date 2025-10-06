@@ -71,7 +71,11 @@ function restrict_slots(playerID, side, slotID)
     local points
     -- check levels if any
     for id, unit in pairs(dcsbot.params['slotblocking']['restricted']) do
+<<<<<<< HEAD
         local is_unit_type_match = (unit['unit_type'] and unit['unit_type'] == unit_type) or (unit['unit_type'] == 'dynamic' and utils.isDynamic(playerID))
+=======
+        local is_unit_type_match = (unit['unit_type'] and unit['unit_type'] == unit_type) or (unit['unit_type'] == 'dynamic' and utils.isDynamic(slotID))
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         local is_unit_name_match = unit['unit_name'] and string.match(unit_name, unit['unit_name'])
         local is_group_name_match = unit['group_name'] and string.match(group_name, unit['group_name'])
         local is_side = (tonumber(unit['side']) or side) == side
@@ -146,15 +150,15 @@ function balance_slots(playerID, side, slotID)
     end
 
     for _, id in base.pairs(players) do
-        local player_info = net.get_player_info(id)
+        local side = net.get_player_info(id, 'side')
         local _, slot, sub_slot = utils.getMulticrewAllParameters(id)
 
         -- only count real seats
         if sub_slot == 0 and slot ~= -1 then
-            if player_info.side == 2 then
+            if side == 2 then
                 numPlayersBlue = numPlayersBlue + 1
             end
-            if player_info.side == 1 then
+            if side == 1 then
                 numPlayersRed = numPlayersRed + 1
             end
         end
@@ -184,8 +188,7 @@ function slotblock.onPlayerTryChangeSlot(playerID, side, slotID)
         end
     end
     -- check slot restrictions by balance
-    local player_info = net.get_player_info(playerID)
-    local old_side = player_info.side
+    local old_side = net.get_player_info(playerID, 'side')
     -- if not side change happens or they want in a sub-slot, do not run balancing
     if old_side ~= side and tonumber(slotID) and dcsbot.params['slotblocking']['balancing'] then
         return balance_slots(playerID, side, slotID)

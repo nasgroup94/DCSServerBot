@@ -1,6 +1,9 @@
 local base	= _G
 dcsbot 		= base.dcsbot
 
+local _menuItems = {}
+local _roles = {}
+
 -- deprecated
 function dcsbot.sendPopupMessage(to, message, time)
 	env.info('DCSServerBot - Popup Message')
@@ -172,3 +175,79 @@ function dcsbot.setFogAnimation(animation, channel)
     }
     dcsbot.sendBotTable(msg, channel)
 end
+<<<<<<< HEAD
+=======
+
+-- Function to send an event to the bot
+local function sendEventToBot(playerID, eventData)
+    local msg = {
+        command = eventData.command,
+        subcommand = eventData.subcommand,
+        params = eventData.params or {},
+        from = playerID
+    }
+    dcsbot.sendBotTable(msg, "-1")
+end
+
+local function buildMenu(playerID, groupID, menuTable, parentMenu)
+    for _, menuEntry in ipairs(menuTable) do
+        for menuName, menuData in pairs(menuEntry) do
+            if type(menuData) == "table" then
+                if menuData.command then
+                    -- Add a command if the menuData contains "command"
+                    missionCommands.addCommandForGroup(groupID, menuName, parentMenu, function()
+                        sendEventToBot(playerID, menuData) -- Call the function with menuData
+                    end)
+                else
+                    -- Create a submenu if it's a nested structure
+                    local subMenu = missionCommands.addSubMenuForGroup(groupID, menuName, parentMenu)
+                    buildMenu(playerID, groupID, menuData, subMenu) -- Process the submenu recursively
+                end
+            end
+        end
+    end
+end
+
+function dcsbot.createMenu(playerID, groupID, data)
+    if not _menuItems[groupID] then
+        parsedData = net.json2lua(data)
+        _menuItems[groupID] = {}
+
+        for _, rootMenuEntry in ipairs(parsedData) do
+            for rootMenuName, rootMenuData in pairs(rootMenuEntry) do
+                -- Create the root menu
+                local rootMenu = missionCommands.addSubMenuForGroup(groupID, rootMenuName)
+                -- Add the root menu to _menuItems[groupID] list
+                _menuItems[groupID][rootMenuName] = rootMenu
+                -- Process all children of the root menu recursively
+                buildMenu(playerID, groupID, rootMenuData, rootMenu)
+            end
+        end
+    end
+end
+
+function dcsbot.deleteMenu(groupID)
+    menu = _menuItems[groupID]
+    if menu then
+        -- Iterate through each root menu in the table and delete it
+        for _, menuItem in pairs(menu) do
+            missionCommands.removeItemForGroup(groupID, menuItem)
+        end
+        -- Clear the menu items for this group
+        _menuItems[groupID] = nil
+    end
+end
+
+-- Don't call this function, it's for internal use only!
+function dcsbot._setUserRoles(user, roles)
+    _roles[user] = net.json2lua(roles)
+end
+
+function dcsbot.getUserRoles(user)
+    return _roles[user]
+end
+
+
+-- Disable error popups in missions
+env.setErrorMessageBoxEnabled(false)
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b

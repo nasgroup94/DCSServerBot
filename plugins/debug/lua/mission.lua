@@ -45,17 +45,29 @@ end
 
 dcsbot.debugEventHandler = {}
 function dcsbot.debugEventHandler:onEvent(event)
+<<<<<<< HEAD
 	status, err = pcall(onEvent, event)
+=======
+	status, err = pcall(onDebugEvent, event)
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 	if not status then
 		env.warning("DCSServerBot - Error during Debug:onEvent(): " .. err)
 	end
 end
 
+<<<<<<< HEAD
 function onEvent(event)
     if not event then
         return
     end
     log.write('EVENT DEBUGGER', log.DEBUG, event_by_id[event.id] .. '(' .. JSON:encode(sanitizer(event)) .. ')')
+=======
+function onDebugEvent(event)
+    if not event then
+        return
+    end
+    log.write('EVENT DEBUGGER', log.DEBUG, tostring(event_by_id[event.id]) .. '(' .. JSON:encode(sanitizer(event)) .. ')')
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 end
 
 

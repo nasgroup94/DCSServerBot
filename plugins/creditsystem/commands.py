@@ -3,7 +3,8 @@ import psycopg
 
 from datetime import timezone
 from discord import app_commands, SelectOption
-from core import utils, Plugin, PluginRequiredError, Group, get_translation
+from discord.ext import tasks
+from core import utils, Plugin, PluginRequiredError, Group, get_translation, PersistentReport
 from psycopg.rows import dict_row
 from services.bot import DCSServerBot
 from typing import Optional, cast, Union
@@ -14,7 +15,19 @@ from .player import CreditPlayer
 _ = get_translation(__name__.split('.')[1])
 
 
-class CreditSystem(Plugin):
+class CreditSystem(Plugin[CreditSystemListener]):
+
+    async def cog_load(self) -> None:
+        await super().cog_load()
+        config = self.get_config()
+        if config.get('leaderboard'):
+            self.update_leaderboard.start()
+
+    async def cog_unload(self) -> None:
+        config = self.get_config()
+        if config.get('leaderboard'):
+            self.update_leaderboard.cancel()
+        await super().cog_unload()
 
     async def prune(self, conn: psycopg.AsyncConnection, *, days: int = -1, ucids: list[str] = None,
                     server: Optional[str] = None) -> None:
@@ -171,10 +184,15 @@ class CreditSystem(Plugin):
                         (old_points_receiver + donation) > int(self.get_config()['max_points']):
                     await interaction.followup.send(
                         _('Member {} would overrun the configured maximum points with this donation. Aborted.').format(
-                            utils.escape_string(to.display_name)))
+                            utils.escape_string(to.display_name)), ephemeral=True
+                    )
                     return
                 if p_receiver:
+                    # make sure we do not donate to a squadron
+                    squadron = p_receiver.squadron
+                    p_receiver.squadron = None
                     p_receiver.points += donation
+                    p_receiver.squadron = squadron
                     p_receiver.audit('donation', old_points_receiver,
                                      _('Donation from member {}').format(interaction.user.display_name))
                 else:
@@ -288,7 +306,10 @@ class CreditSystem(Plugin):
                             utils.escape_string(to.display_name)), ephemeral=True)
                     return
                 if p_donor:
+                    squadron = p_donor.squadron
+                    p_donor.squadron = None
                     p_donor.points -= donation
+                    p_donor.squadron = squadron
                     p_donor.audit('donation', data[n]['credits'], _('Donation to member {}').format(to.display_name))
                 else:
                     await conn.execute("""
@@ -304,7 +325,11 @@ class CreditSystem(Plugin):
                     """, (data[n]['id'], 'donation', donor, data[n]['credits'], new_points_donor,
                           _('Donation to member {}').format(to.display_name)))
                 if p_receiver:
+                    # make sure we do not donate to a squadron
+                    squadron = p_receiver.squadron
+                    p_receiver.squadron = None
                     p_receiver.points += donation
+                    p_receiver.squadron = squadron
                     p_receiver.audit('donation', old_points_receiver,
                                      _('Donation from member {}').format(interaction.user.display_name))
                 else:
@@ -331,6 +356,18 @@ class CreditSystem(Plugin):
                 await interaction.followup.send(
                     to.mention + _(', you just received {donation} credit points from {member}!').format(
                         donation=donation, member=utils.escape_string(interaction.user.display_name)))
+
+    @tasks.loop(minutes=5)
+    async def update_leaderboard(self):
+        config = self.get_config().get('leaderboard', {})
+        report = PersistentReport(self.bot, self.plugin_name, "leaderboard.json",
+                                  embed_name="credits_leaderboard",
+                                  channel_id=config['channel'])
+        await report.render(limit=config.get('limit', 10))
+
+    @update_leaderboard.before_loop
+    async def before_check(self):
+        await self.bot.wait_until_ready()
 
 
 async def setup(bot: DCSServerBot):

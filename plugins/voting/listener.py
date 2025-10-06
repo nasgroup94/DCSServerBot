@@ -3,7 +3,7 @@ import asyncio
 from core import EventListener, chat_command, Server, Player, utils, Coalition, event, ChatCommand, get_translation
 from functools import partial
 from itertools import islice
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from plugins.creditsystem.player import CreditPlayer
 from plugins.voting.base import VotableItem
@@ -11,6 +11,9 @@ from plugins.voting.base import VotableItem
 # ruamel YAML support
 from ruamel.yaml import YAML
 yaml = YAML()
+
+if TYPE_CHECKING:
+    from .commands import Voting
 
 _ = get_translation(__name__.split('.')[1])
 
@@ -33,19 +36,23 @@ class VotingHandler:
         for task in self.tasks:
             task.cancel()
 
-    def get_leading_vote(self) -> str:
+    async def get_leading_vote(self) -> str:
         if self.votes:
             win_id = max(self.votes, key=self.votes.get) - 1
-            winner = next(islice(self.item.get_choices(), win_id, None))
+            winner = next(islice(await self.item.get_choices(), win_id, None))
             if winner:
                 return "\n" + _('Current leading vote: "{}"').format(winner)
         return ""
 
     async def print(self, player: Optional[Player] = None):
-        message = self.item.print() + '\n'
-        for idx, element in enumerate(self.item.get_choices()):
+        message = (await self.item.print()) + '\n'
+        for idx, element in enumerate(await self.item.get_choices()):
             message += f'{idx + 1}. {element}\n'
+<<<<<<< HEAD
         message += self.get_leading_vote()
+=======
+        message += await self.get_leading_vote()
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         message += "\n" + _("Use {prefix}{command} <number> to vote for the change.").format(
             prefix=self.config['prefix'], command=self.listener.vote.name) + "\n"
         if player:
@@ -80,7 +87,7 @@ class VotingHandler:
 
     async def remind(self, remaining: int):
         message = _("A voting is now open for another {time}!").format(time=utils.format_time(remaining))
-        message += self.get_leading_vote()
+        message += await self.get_leading_vote()
         await self.server.sendPopupMessage(Coalition.ALL, message)
 
     def _get_possible_voters(self) -> int:
@@ -127,7 +134,7 @@ class VotingHandler:
 
         win_id = await self.check_vote()
         if win_id > -1:
-            winner = next(islice(self.item.get_choices(), win_id, None))
+            winner = next(islice(await self.item.get_choices(), win_id, None))
             message = f"\"{winner}\" won with {self.votes[win_id + 1]} votes!"
             await self.server.sendChatMessage(Coalition.ALL, message)
             await self.server.sendPopupMessage(Coalition.ALL, message)
@@ -135,7 +142,7 @@ class VotingHandler:
         all_votes.pop(self.server.name, None)
 
 
-class VotingListener(EventListener):
+class VotingListener(EventListener["Voting"]):
 
     async def can_run(self, command: ChatCommand, server: Server, player: Player) -> bool:
         config = self.get_config(server=server)
@@ -210,8 +217,8 @@ class VotingListener(EventListener):
             await player.sendChatMessage(str(ex))
             return
         all_votes[server.name] = VotingHandler(listener=self, item=item, server=server, config=config)
-        await self.bot.audit(f"{player.display_name} created a voting", user=player.member or player.ucid,
-                             server=server)
+        await self.bot.audit(f"{player.display_name} called a vote for {what}",
+                             user=player.member or player.ucid, server=server)
 
     @event(name="onPlayerStart")
     async def onPlayerStart(self, server: Server, data: dict) -> None:
@@ -222,7 +229,6 @@ class VotingListener(EventListener):
             return
         player: Player = server.get_player(ucid=data['ucid'])
         if player:
-            # noinspection PyAsyncCall
             asyncio.create_task(player.sendChatMessage(
                 utils.format_string(config['welcome_message'], server=server, player=player, prefix=self.prefix)))
 

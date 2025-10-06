@@ -11,6 +11,7 @@ DEFAULT:
     background: white on navy_blue
     border: white
   servers:
+    hide_remote_servers: true         # show only local servers on the MASTER node (default: false)
     background: white on dark_blue
     border: white
   nodes:
@@ -21,7 +22,6 @@ DEFAULT:
     border: white
 ```
 
-You can disable the dashboard in your main.yaml like so:
-```yaml
-use_dashboard: false  # disable the Dashboard (default: true)
-```
+> [!TIP]
+> You can disable the dashboard in your main.yaml like so:<br>
+> `use_dashboard: false  # disable the Dashboard (default: true)`

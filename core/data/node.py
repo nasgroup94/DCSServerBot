@@ -1,18 +1,18 @@
+from __future__ import annotations
+
+import aiohttp
 import logging
 import os
 
 from core import utils
 from core.translations import get_translation
+from core.utils.helper import YAMLError
 from enum import Enum, auto
 from pathlib import Path
 from typing import Union, Optional, TYPE_CHECKING
 from urllib.parse import urlparse
 
-from ..utils.helper import YAMLError
-
 # ruamel YAML support
-from pykwalify.errors import SchemaError, CoreError
-from pykwalify.core import Core
 from ruamel.yaml import YAML
 from ruamel.yaml.error import MarkedYAMLError
 yaml = YAML()
@@ -53,32 +53,56 @@ class Node:
 
     def __init__(self, name: str, config_dir: Optional[str] = 'config'):
         self.name = name
-        self.log = logging.getLogger(__name__)
+        self.log = logging.getLogger(f"{self.__class__.__module__}.{self.__class__.__name__}")
         self.config_dir = config_dir
-        self.instances: list["Instance"] = list()
+        self.instances: list[Instance] = list()
         self.locals = None
         self.config = self.read_config(os.path.join(config_dir, 'main.yaml'))
         self.guild_id: int = int(self.config['guild_id'])
+        self.dcs_version = None
         self.slow_system: bool = False
+        self.is_remote: bool = False
+
+    def __repr__(self):
+        return self.name
 
     def __repr__(self):
         return self.name
 
     @property
     def master(self) -> bool:
-        raise NotImplemented()
+        raise NotImplementedError()
 
     @master.setter
     def master(self, value: bool):
-        raise NotImplemented()
+        raise NotImplementedError()
 
     @property
     def public_ip(self) -> str:
-        raise NotImplemented()
+        raise NotImplementedError()
 
     @property
     def installation(self) -> str:
-        raise NotImplemented()
+        raise NotImplementedError()
+
+    @property
+    def proxy(self) -> Optional[str]:
+        if 'proxy' not in self.locals:
+            config = yaml.load(Path(os.path.join(self.config_dir, 'services', 'bot.yaml')).read_text(encoding='utf-8'))
+            self.locals['proxy'] = config.get('proxy', {}).get('url')
+        return self.locals['proxy']
+
+    @property
+    def proxy_auth(self) -> Optional[aiohttp.BasicAuth]:
+        if 'proxy_auth' not in self.locals:
+            config = yaml.load(Path(os.path.join(self.config_dir, 'services', 'bot.yaml')).read_text(encoding='utf-8'))
+            username = config.get('proxy', {}).get('username')
+            try:
+                password = utils.get_password('proxy', self.config_dir)
+                self.locals['proxy_auth'] = aiohttp.BasicAuth(username, password)
+            except ValueError:
+                self.locals['proxy_auth'] = None
+        return self.locals['proxy_auth']
 
     @property
     def extensions(self) -> dict:
@@ -86,18 +110,18 @@ class Node:
 
     def read_config(self, file: str) -> dict:
         try:
-            c = Core(source_file=file, schema_files=['schemas/main_schema.yaml'], file_encoding='utf-8')
-            try:
-                c.validate(raise_exception=True)
-            except SchemaError as ex:
-                self.log.warning(f'Error while parsing {file}:\n{ex}')
+            # we need to read first, otherwise we would not know the validation settings
             config = yaml.load(Path(file).read_text(encoding='utf-8'))
+            validation = config.get('validation', 'lazy')
+            if validation in ['strict', 'lazy']:
+                utils.validate(file, ['schemas/main_schema.yaml'], raise_exception=(validation == 'strict'))
+
             # check if we need to secure the database URL
             database_url = config.get('database', {}).get('url')
             if database_url:
                 url = urlparse(database_url)
                 if url.password != 'SECRET':
-                    utils.set_password('database', url.password, self.config_dir)
+                    utils.set_password('clusterdb', url.password, self.config_dir)
                     port = url.port or 5432
                     config['database']['url'] = \
                         f"{url.scheme}://{url.username}:SECRET@{url.hostname}:{port}{url.path}?sslmode=prefer"
@@ -111,87 +135,108 @@ class Node:
             config['logging']['loglevel'] = config['logging'].get('loglevel', 'DEBUG')
             config['logging']['logrotate_size'] = config['logging'].get('logrotate_size', 10485760)
             config['logging']['logrotate_count'] = config['logging'].get('logrotate_count', 5)
+            config['logging']['utc'] = config['logging'].get('utc', True)
             config['chat_command_prefix'] = config.get('chat_command_prefix', '-')
             return config
-        except (FileNotFoundError, CoreError):
+        except FileNotFoundError:
             raise FatalException()
         except MarkedYAMLError as ex:
             raise YAMLError(file, ex)
 
     def read_locals(self) -> dict:
-        raise NotImplemented()
+        raise NotImplementedError()
 
     async def shutdown(self, rc: int = -2):
-        raise NotImplemented()
+        raise NotImplementedError()
 
     async def restart(self):
-        raise NotImplemented()
+        raise NotImplementedError()
 
     async def upgrade_pending(self) -> bool:
-        raise NotImplemented()
+        raise NotImplementedError()
 
     async def upgrade(self):
-        raise NotImplemented()
+        raise NotImplementedError()
 
-    async def update(self, warn_times: list[int], branch: Optional[str] = None) -> int:
-        raise NotImplemented()
+    async def dcs_update(self, branch: Optional[str] = None, version: Optional[str] = None,
+                         warn_times: list[int] = None, announce: Optional[bool] = True):
+        raise NotImplementedError()
 
     async def get_dcs_branch_and_version(self) -> tuple[str, str]:
-        raise NotImplemented()
+        raise NotImplementedError()
 
     async def handle_module(self, what: str, module: str) -> None:
-        raise NotImplemented()
+        raise NotImplementedError()
 
     async def get_installed_modules(self) -> list[str]:
-        raise NotImplemented()
+        raise NotImplementedError()
 
     async def get_available_modules(self) -> list[str]:
-        raise NotImplemented()
+        raise NotImplementedError()
+
+    async def get_available_dcs_versions(self, branch: str) -> Optional[list[str]]:
+        raise NotImplementedError()
 
     async def get_latest_version(self, branch: str) -> Optional[str]:
-        raise NotImplemented()
+        raise NotImplementedError()
 
     async def shell_command(self, cmd: str, timeout: int = 60) -> Optional[tuple[str, str]]:
-        raise NotImplemented()
+        raise NotImplementedError()
 
     async def read_file(self, path: str) -> Union[bytes, int]:
-        raise NotImplemented()
+        raise NotImplementedError()
 
     async def write_file(self, filename: str, url: str, overwrite: bool = False) -> UploadStatus:
-        raise NotImplemented()
+        raise NotImplementedError()
 
     async def list_directory(self, path: str, *, pattern: Union[str, list[str]] = '*',
                              order: SortOrder = SortOrder.DATE,
                              is_dir: bool = False, ignore: list[str] = None, traverse: bool = False
                              ) -> tuple[str, list[str]]:
+<<<<<<< HEAD
         raise NotImplemented()
 
     async def create_directory(self, path: str):
         raise NotImplemented()
+=======
+        raise NotImplementedError()
+
+    async def create_directory(self, path: str):
+        raise NotImplementedError()
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
     async def remove_file(self, path: str):
-        raise NotImplemented()
+        raise NotImplementedError()
 
     async def rename_file(self, old_name: str, new_name: str, *, force: Optional[bool] = False):
-        raise NotImplemented()
+        raise NotImplementedError()
 
-    async def rename_server(self, server: "Server", new_name: str):
-        raise NotImplemented()
+    async def rename_server(self, server: Server, new_name: str):
+        raise NotImplementedError()
 
-    async def add_instance(self, name: str, *, template: str = "") -> "Instance":
-        raise NotImplemented()
+    async def add_instance(self, name: str, *, template: str = "") -> Instance:
+        raise NotImplementedError()
 
-    async def delete_instance(self, instance: "Instance", remove_files: bool) -> None:
-        raise NotImplemented()
+    async def delete_instance(self, instance: Instance, remove_files: bool) -> None:
+        raise NotImplementedError()
 
-    async def rename_instance(self, instance: "Instance", new_name: str) -> None:
-        raise NotImplemented()
+    async def rename_instance(self, instance: Instance, new_name: str) -> None:
+        raise NotImplementedError()
 
     async def find_all_instances(self) -> list[tuple[str, str]]:
-        raise NotImplemented()
+        raise NotImplementedError()
 
-    async def migrate_server(self, server: "Server", instance: "Instance") -> None:
-        raise NotImplemented()
+    async def migrate_server(self, server: Server, instance: Instance) -> None:
+        raise NotImplementedError()
 
-    async def unregister_server(self, server: "Server") -> None:
-        raise NotImplemented()
+    async def unregister_server(self, server: Server) -> None:
+        raise NotImplementedError()
+
+    async def install_plugin(self, plugin: str) -> bool:
+        raise NotImplementedError()
+
+    async def uninstall_plugin(self, plugin: str) -> bool:
+        raise NotImplementedError()
+
+    async def get_cpu_info(self) -> Union[bytes, int]:
+        raise NotImplementedError()

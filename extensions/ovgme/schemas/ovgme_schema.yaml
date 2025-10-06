@@ -1,4 +1,0 @@
-schema;instance_ovgme_schema:
-  type: map
-  mapping:
-    enabled: {type: bool}

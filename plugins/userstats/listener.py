@@ -1,12 +1,15 @@
 import asyncio
 import psycopg
 
-from core import EventListener, Plugin, Status, Server, Side, Player, event
+from core import EventListener, Status, Server, Side, Player, event
 from psycopg import Connection
-from typing import Union
+from typing import Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .commands import UserStatistics
 
 
-class UserStatisticsEventListener(EventListener):
+class UserStatisticsEventListener(EventListener["UserStatistics"]):
 
     SQL_EVENT_UPDATES = {
         'takeoff': 'UPDATE statistics SET takeoffs = takeoffs + 1 WHERE mission_id = %s AND player_ucid = %s AND hop_off IS NULL',
@@ -42,7 +45,7 @@ class UserStatisticsEventListener(EventListener):
         'all_players': 'SELECT player_ucid FROM statistics WHERE mission_id = %s AND hop_off IS NULL'
     }
 
-    def __init__(self, plugin: Plugin):
+    def __init__(self, plugin: "UserStatistics"):
         super().__init__(plugin)
         self.active_servers: set[str] = set()
 
@@ -221,6 +224,8 @@ class UserStatisticsEventListener(EventListener):
                 kill_type = 'pvp_planes'
             elif data['victimCategory'] == 'Helicopters':
                 kill_type = 'pvp_helicopters'
+            else:
+                kill_type = 'kill_other'
         elif data['victimCategory'] == 'Planes':
             kill_type = 'kill_planes'
         elif data['victimCategory'] == 'Helicopters':
@@ -249,6 +254,8 @@ class UserStatisticsEventListener(EventListener):
                 death_type = 'deaths_pvp_planes'
             elif data['killerCategory'] == 'Helicopters':
                 death_type = 'deaths_pvp_helicopters'
+            else:
+                death_type = 'other'
         elif data['killerCategory'] == 'Planes':
             death_type = 'deaths_planes'
         elif data['killerCategory'] == 'Helicopters':
@@ -313,8 +320,6 @@ class UserStatisticsEventListener(EventListener):
         if event_name == 'mission_end':
             config = self.get_config(server)
             if 'highscore' in config:
-                # noinspection PyAsyncCall
-                # noinspection PyUnresolvedReferences
                 asyncio.create_task(self.plugin.render_highscore(config['highscore'], server=server, mission_end=True))
 
     @event(name="onMemberLinked")
@@ -333,7 +338,6 @@ class UserStatisticsEventListener(EventListener):
                                 ON CONFLICT (squadron_id, player_ucid) DO NOTHING
                             """, (row[0], data['ucid']))
                         if self.get_config().get('squadrons', {}).get('persist_list', False):
-                            # noinspection PyUnresolvedReferences
                             await self.plugin.persist_squadron_list(row[0])
         except Exception as ex:
             self.log.exception(ex)
@@ -352,7 +356,6 @@ class UserStatisticsEventListener(EventListener):
                             DELETE FROM squadron_members WHERE squadron_id = %s AND player_ucid = %s 
                         """, (row[0], data['ucid']))
                         if self.get_config().get('squadrons', {}).get('persist_list', False):
-                            # noinspection PyUnresolvedReferences
                             await self.plugin.persist_squadron_list(row[0])
         except Exception as ex:
             self.log.exception(ex)

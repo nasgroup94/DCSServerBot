@@ -1,8 +1,11 @@
 type: map
+nullable: false
 mapping:
   DEFAULT:
     type: map
+    nullable: false
     mapping:
+<<<<<<< HEAD
       dcs-ban: {type: bool}
       discord-ban: {type: bool}
       watchlist_only: {type: bool}
@@ -12,5 +15,19 @@ mapping:
       register: {type: bool}
       upload_errors: {type: bool}
       token: {type: str}
+=======
+      banlist: {type: str, nullable: false, enum: ['pvp', 'pve', 'both']}
+      dcs-ban: {type: bool, nullable: false}
+      discord-ban: {type: bool, nullable: false}
+      watchlist_only: {type: bool, nullable: false}
+      host: {type: str, nullable: false, range: {min: 1}}
+      port: {type: int, range: {min: 80, max: 65535}, nullable: false}
+      protocol: {type: str, enum: ['http', 'https'], nullable: false}
+      register: {type: bool, nullable: false}
+      upload_errors: {type: bool, nullable: false}
+      token: {type: str, nullable: false, range: {min: 1}}
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
   commands:
     include: 'commands_schema'
+  chat_commands:
+    include: 'chat_commands_schema'

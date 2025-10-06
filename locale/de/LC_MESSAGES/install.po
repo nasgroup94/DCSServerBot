@@ -96,7 +96,10 @@ msgid "Searching for existing DCS server configurations ..."
 msgstr "Suche nach existierenden DCS-Server-Konfigurationen ..."
 
 msgid "Please enter the path to your DCS World installation"
-msgstr "Bitte gebe den Pfad zu Deiner DCS World Installation an"
+msgstr "Bitte gebe den Pfad zu Deiner DCS World-Installation an"
+
+msgid "Do you want to continue without a DCS installation being set?"
+msgstr "Möchtes Du weiter machen, ohne eine DCS-Installation zu konfigurieren?"
 
 msgid "Directory not found. Please try again."
 msgstr "Verzeichnis nicht gefunden. Bitte versuche es noch einmal."
@@ -156,8 +159,14 @@ msgstr "Bitte gebe den Hostnamen des PostgreSQL-Datenbankservers an"
 msgid "Enter the port to your PostgreSQL-database"
 msgstr "Bitte gebe den Datenbank-Port an"
 
-msgid "Please enter your PostgreSQL master password (user=postgres)"
-msgstr "Bitte gebe das Passwort für den postgres-Benutzer ein"
+msgid "Please enter the name of your PostgreSQL master database"
+msgstr "Bitte gebe den Namen der PostgreSQL Master-Datenbank ein"
+
+msgid "Please enter your PostgreSQL master user name"
+msgstr "Bitte gebe den Namen des PostgreSQL Master Benutzers ein"
+
+msgid "Please enter your PostgreSQL master password (user={})"
+msgstr "Bitte gebe das Passwort für den Benutzer \"{}\" ein"
 
 msgid "[yellow]Existing {} user found![/]"
 msgstr "[yellow]Der Benutzer {} existiert bereits![/]"
@@ -189,6 +198,9 @@ msgstr "\n{}. [u]Knoten-Konfiguration[/]"
 # DCS Configuration
 msgid "Aborted: No DCS installation found."
 msgstr "Abgebrochen. Keine DCS-Installation gefunden."
+
+msgid "Is {} a static IP-address for this node?"
+msgstr "Ist {} eine statische IP-Adresse für diesen Knoten?"
 
 msgid "Do you want your DCS installation being auto-updated by the bot?"
 msgstr "Möchtest Du DCS vom Bot automatisch aktualisieren lassen?"
@@ -236,8 +248,8 @@ msgid "To display the mission and player status."
 msgstr "Zeigt den Status des DCS-Servers und die aktuelle Spieler-Liste an"
 
 # Chat Channel
-msgid "[bright_black]Optional:[/]: An in-game chat replication."
-msgstr "[bright_black]Optional:[/]: Repliziert die Chatnachrichten aus DCS."
+msgid "Optional: An in-game chat replication."
+msgstr "Optional: Repliziert die Chatnachrichten aus DCS."
 
 # Admin Channel
 msgid "For admin commands."

@@ -17,15 +17,12 @@ __all__ = [
     "Lardoon"
 ]
 
-# Globals
-process: Optional[psutil.Process] = None
-servers: set[str] = set()
-imports: set[str] = set()
-tacview_dirs: dict[str, set[str]] = {}
-lock = asyncio.Lock()
-
 
 class Lardoon(Extension):
+    _process: Optional[psutil.Process] = None
+    _servers: set[str] = set()
+    _tacview_dirs: dict[str, set[str]] = {}
+    _lock = asyncio.Lock()
 
     CONFIG_DICT = {
         "bind": {
@@ -45,89 +42,124 @@ class Lardoon(Extension):
     }
 
     def __init__(self, server: Server, config: dict):
-        global process
-
         super().__init__(server, config)
-        # find a running process, if there is any
-        if not process or not process.is_running():
+        if self.config.get('use_single_process', True):
+            type(self)._process = self.process = self.find_running_process(type(self)._process)
+        else:
+            self.process = self.find_running_process(None)
+
+    def find_running_process(self, p: Optional[psutil.Process] = None):
+        if not p or not p.is_running():
             cmd = self.config.get('cmd')
             if not cmd:
-                return
-            process = utils.find_process(os.path.basename(cmd))
-            if process:
+                return None
+            p = next(utils.find_process(os.path.basename(cmd), self.config['bind']), None)
+            if p:
                 self.log.debug("- Running Lardoon process found.")
+            return p
+        else:
+            return p
 
     def _get_tacview_dir(self) -> str:
         return self.config.get('tacviewExportPath', self.server.options['plugins']['Tacview'].get(
             'tacviewExportPath')) or TACVIEW_DEFAULT_DIR
 
     async def startup(self) -> bool:
+<<<<<<< HEAD
         global process, servers, tacview_dirs, lock
 
+=======
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         if 'Tacview' not in self.server.options['plugins']:
             self.log.warning('Lardoon needs Tacview to be enabled in your server!')
             return False
 
-        async with lock:
-            if not process or not process.is_running():
+        async with type(self)._lock:
+            if self.config.get('use_single_process', True):
+                self.process = type(self)._process
 
-                def log_output(proc: subprocess.Popen):
-                    for line in iter(proc.stdout.readline, b''):
-                        self.log.info(line.decode('utf-8').rstrip())
+            if not self.process or not self.process.is_running():
+                def log_stream(proc: subprocess.Popen, stream: str):
+                    pipe = proc.stdout if stream == 'stdout' else proc.stderr
+                    for line in iter(pipe.readline, b''):
+                        if stream == 'stdout':
+                            self.log.debug(line.decode('utf-8').rstrip())
+                        else:
+                            self.log.error(line.decode('utf-8').rstrip())
 
                 def run_subprocess():
+                    if self.config.get('use_single_process', True):
+                        cwd = None
+                    else:
+                        cwd = os.path.join(self.server.instance.home, 'Config')
                     out = subprocess.PIPE if self.config.get('debug', False) else subprocess.DEVNULL
                     cmd = os.path.basename(self.config['cmd'])
                     self.log.debug(f"Launching Lardoon server with {cmd} serve --bind {self.config['bind']}")
                     proc = subprocess.Popen([cmd, "serve", "--bind", self.config['bind']],
-                                            executable=os.path.expandvars(self.config['cmd']),
-                                            stdout=out, stderr=subprocess.STDOUT)
+                                            executable=os.path.expandvars(self.config['cmd']), cwd=cwd,
+                                            stdout=out, stderr=subprocess.PIPE)
                     if self.config.get('debug', False):
-                        Thread(target=log_output, args=(proc,), daemon=True).start()
+                        Thread(target=log_stream, args=(proc, 'stdout'), daemon=True).start()
+                    Thread(target=log_stream, args=(proc, 'stderr'), daemon=True).start()
                     return proc
 
                 p = await asyncio.to_thread(run_subprocess)
                 try:
-                    process = psutil.Process(p.pid)
+                    self.process = psutil.Process(p.pid)
                     atexit.register(self.terminate)
                 except psutil.NoSuchProcess:
                     self.log.error(f"Error during launch of {self.config['cmd']}!")
                     return False
 
+<<<<<<< HEAD
         servers.add(self.server.name)
         tacview_dir = self._get_tacview_dir()
         if tacview_dir not in tacview_dirs:
             tacview_dirs[tacview_dir] = set()
         tacview_dirs[tacview_dir].add(self.server.name)
+=======
+        if self.config.get('use_single_process', True):
+            type(self)._process = self.process
+            type(self)._servers.add(self.server.name)
+            tacview_dir = self._get_tacview_dir()
+            if tacview_dir not in type(self)._tacview_dirs:
+                type(self)._tacview_dirs[tacview_dir] = set()
+            type(self)._tacview_dirs[tacview_dir].add(self.server.name)
+        else:
+            self._schedule.start()
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         return await super().startup()
 
     def terminate(self) -> bool:
-        global process
-
         try:
-            utils.terminate_process(process)
-            process = None
+            utils.terminate_process(self.process)
+            self.process = None
+            if self.config.get('use_single_process', True):
+                type(self)._process = None
             return True
         except Exception as ex:
             self.log.error(f"Error during shutdown of {self.config['cmd']}: {str(ex)}")
             return False
 
     def shutdown(self) -> bool:
-        global process, servers
-
         super().shutdown()
-        if self.server.name in servers:
-            servers.remove(self.server.name)
-        tacview_dir = self._get_tacview_dir()
-        tacview_dirs[tacview_dir].discard(self.server.name)
-        if not servers:
+        if self.config.get('use_single_process', True):
+            if self.server.name in type(self)._servers:
+                type(self)._servers.remove(self.server.name)
+            tacview_dir = self._get_tacview_dir()
+            type(self)._tacview_dirs[tacview_dir].discard(self.server.name)
+            if not type(self)._servers:
+                return self.terminate()
+            return True
+        else:
+            self._schedule.cancel()
             return self.terminate()
-        return True
 
     def is_running(self) -> bool:
-        global process, servers
-
-        return process is not None and process.is_running() and self.server.name in servers
+        if self.config.get('use_single_process', True):
+            return type(self)._process and type(self)._process.is_running() and self.server.name in type(self)._servers
+        else:
+            return self.process is not None and self.process.is_running()
 
     @property
     def version(self) -> Optional[str]:
@@ -154,11 +186,14 @@ class Lardoon(Extension):
         }
 
     @tasks.loop(minutes=1.0)
-    async def schedule(self):
-        global lock, tacview_dirs
-
+    async def _schedule(self):
         def run_subprocess(args):
-            proc = subprocess.Popen([cmd] + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if self.config.get('use_single_process', True):
+                cwd = None
+            else:
+                cwd = os.path.join(self.server.instance.home, 'Config')
+
+            proc = subprocess.Popen([cmd] + args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, stderr = proc.communicate()
             if proc.returncode != 0:
                 if stderr:
@@ -168,6 +203,7 @@ class Lardoon(Extension):
 
         # make sure we're running on the correct schedule
         minutes = self.config.get('minutes', 5)
+<<<<<<< HEAD
         if self.schedule.minutes != minutes:
             self.schedule.change_interval(minutes=minutes)
 
@@ -184,3 +220,36 @@ class Lardoon(Extension):
                     await asyncio.to_thread(run_subprocess, ["prune", "--no-dry-run"])
             except Exception as ex:
                 self.log.exception(ex)
+=======
+        if self._schedule.minutes != minutes:
+            self._schedule.change_interval(minutes=minutes)
+
+        cmd = os.path.expandvars(self.config['cmd'])
+        if self.config.get('use_single_process', True):
+            for tacview_dir, server_list in type(self)._tacview_dirs.items():
+                if not server_list:
+                    continue
+                try:
+                    async with type(self)._lock:
+                        self.log.debug("Lardoon: Scheduled import run ...")
+                        await asyncio.to_thread(run_subprocess, ["import", "-p", tacview_dir])
+                    async with type(self)._lock:
+                        self.log.debug("Lardoon: Scheduled prune run ...")
+                        await asyncio.to_thread(run_subprocess, ["prune", "--no-dry-run"])
+                except Exception as ex:
+                    self.log.exception(ex)
+        else:
+            await asyncio.to_thread(run_subprocess, ["import", "-p", self._get_tacview_dir()])
+            await asyncio.to_thread(run_subprocess, ["prune", "--no-dry-run"])
+
+    @tasks.loop(count=1)
+    async def schedule(self):
+        if self.config.get('use_single_process', True):
+            self._schedule.start()
+        return
+
+    async def get_ports(self) -> dict:
+        return {
+            "Lardoon": self.config['bind'].split(':')[1]
+        } if self.enabled else {}
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b

@@ -6,7 +6,11 @@ import os
 import zipfile
 
 from aiohttp import BasicAuth
+<<<<<<< HEAD
 from core import utils, FatalException, Node
+=======
+from core import utils, FatalException
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 from core.services.base import Service
 from core.services.registry import ServiceRegistry
 from discord.ext import commands
@@ -19,18 +23,19 @@ from typing import Optional, Union, TYPE_CHECKING
 
 from .dcsserverbot import DCSServerBot
 from .dummy import DummyBot
+from ..servicebus import ServiceBus
 
 # ruamel YAML support
 from ruamel.yaml import YAML
 yaml = YAML()
 
 if TYPE_CHECKING:
-    from core import Server, Plugin
+    from core import Server, Plugin, Node
 
 __all__ = ["BotService"]
 
 
-@ServiceRegistry.register(master_only=True)
+@ServiceRegistry.register(master_only=True, depends_on=[ServiceBus])
 class BotService(Service):
 
     def _migrate_autorole(self) -> bool:
@@ -84,6 +89,7 @@ class BotService(Service):
     @property
     def proxy(self) -> Optional[str]:
         return self.locals.get('proxy', {}).get('url')
+<<<<<<< HEAD
 
     @property
     def proxy_auth(self) -> Optional[BasicAuth]:
@@ -100,13 +106,32 @@ class BotService(Service):
             prefixes = [self.locals.get('command_prefix', '.')]
             # Allow users to @mention the bot instead of using a prefix
             return commands.when_mentioned_or(*prefixes)(client, message)
+=======
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
+    @property
+    def proxy_auth(self) -> Optional[BasicAuth]:
+        username = self.locals.get('proxy', {}).get('username')
+        try:
+            password = utils.get_password('proxy', self.node.config_dir)
+        except ValueError:
+            return None
+        if username and password:
+            return BasicAuth(username, password)
+        return None
+
+    def init_bot(self):
         if self.locals.get('no_discord', False):
             return DummyBot(version=self.node.bot_version,
                             sub_version=self.node.sub_version,
                             node=self.node,
                             locals=self.locals)
         else:
+            def get_prefix(client, message):
+                prefixes = []
+                # Allow users to @mention the bot instead of using a prefix
+                return commands.when_mentioned_or(*prefixes)(client, message)
+
             # Create the Bot
             proxy = self.locals.get('proxy', {}).get('url')
             return DCSServerBot(version=self.node.bot_version,
@@ -127,16 +152,11 @@ class BotService(Service):
                                 proxy_auth=self.proxy_auth)
 
     async def start(self, *, reconnect: bool = True) -> None:
-        from services.servicebus import ServiceBus
-
         await super().start()
         try:
-            while not ServiceRegistry.get(ServiceBus):
-                await asyncio.sleep(1)
             self.bot = self.init_bot()
             await self.install_fonts()
-            await self.bot.login(self.token)
-            # noinspection PyAsyncCall
+            await self.bot.login(token=self.token)
             asyncio.create_task(self.bot.connect(reconnect=reconnect))
         except Exception as ex:
             self.log.exception(ex)
@@ -154,6 +174,7 @@ class BotService(Service):
             await self.bot.close()
         await super().stop()
 
+<<<<<<< HEAD
     async def alert(self, title: str, message: str, server: Optional[Server] = None,
                     node: Optional[Node] = None) -> None:
         mentions = ''.join([self.bot.get_role(role).mention for role in self.bot.roles['Alert'] if role is not None])
@@ -166,6 +187,22 @@ class BotService(Service):
         admin_channel = self.bot.get_admin_channel(server)
         if admin_channel:
             await admin_channel.send(content=mentions, embed=embed)
+=======
+    async def alert(self, title: str, message: str, server: Optional[Server] = None) -> None:
+        try:
+            mentions = ''.join([self.bot.get_role(role).mention for role in self.bot.roles['Alert'] if role is not None])
+        except AttributeError:
+            self.log.error(f"Alert-Role {self.bot.roles['Alert']} not found.")
+            mentions = ""
+        embed = utils.create_warning_embed(title=title, text=utils.escape_string(message))
+        admin_channel = self.bot.get_admin_channel(server)
+        audit_channel = self.bot.get_channel(self.bot.locals.get('channels', {}).get('audit', -1))
+        channel = admin_channel or audit_channel
+        if channel:
+            await channel.send(content=mentions, embed=embed)
+        else:
+            self.log.critical(f"{title}: {message}")
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
     async def install_fonts(self):
         font_dir = Path('fonts')
@@ -209,8 +246,8 @@ class BotService(Service):
         await _channel.send(content=content, file=file, embed=_embed)
 
     async def audit(self, message, user: Optional[Union[discord.Member, str]] = None,
-                    server: Optional[Server] = None, **kwargs):
-        await self.bot.audit(message, user=user, server=server, **kwargs)
+                    server: Optional[Server] = None, node: Optional[Node] = None, **kwargs):
+        await self.bot.audit(message, user=user, server=server, node=node, **kwargs)
 
     async def rename_server(self, server: Server, new_name: str):
         async with self.apool.connection() as conn:

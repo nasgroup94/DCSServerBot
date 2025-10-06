@@ -1,13 +1,16 @@
 type: map
+nullable: false
 mapping:
-  no_discord: {type: bool}
-  token: {type: str}
-  owner: {type: int}
-  automatch: {type: bool}
-  autoban: {type: bool}
+  no_discord: {type: bool, nullable: false}
+  token: {type: str, nullable: false, range: {min: 1}}
+  owner: {type: int, nullable: false}
+  automatch: {type: bool, nullable: false}
+  autoban: {type: bool, nullable: false}
   autorole:
     type: map
+    nullable: false
     mapping:
+<<<<<<< HEAD
       on_join: {type: text}
       linked: {type: text}
       online: {type: text}
@@ -20,9 +23,26 @@ mapping:
       audit: {type: int}
       admin: {type: int}
   greeting_dm: {type: str}
+=======
+      on_join: {type: text, nullable: false}
+      linked: {type: text, nullable: false}
+      online: {type: text, nullable: false}
+  no_dcs_autoban: {type: bool, nullable: false}
+  message_ban: {type: str, nullable: false, range: {min: 1}}
+  message_autodelete: {type: int, range: {min: 0}, nullable: false}
+  channels:
+    type: map
+    nullable: false
+    mapping:
+      audit: {type: int, nullable: false}
+      admin: {type: int, nullable: false}
+  greeting_dm: {type: str, nullable: false, range: {min: 1}}
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
   reports:
     type: map
+    nullable: false
     mapping:
+<<<<<<< HEAD
       num_workers: {type: int, range: {min: 4}}
       cjk_font: {type: str, enum: ['TC', 'JP', 'KR']}
   discord_status: {type: str}
@@ -35,24 +55,63 @@ mapping:
   roles:
     type: map
     allowempty: true
+=======
+      num_workers: {type: int, range: {min: 4}, nullable: false}
+      cjk_font: {type: str, enum: ['TC', 'JP', 'KR'], nullable: false}
+  discord_status: {type: str, nullable: false}
+  proxy:
+    type: map
+    nullable: false
+    mapping:
+      url: {type: url, nullable: false}
+      username: {type: str, nullable: false, range: {min: 1}}
+      password: {type: str, nullable: false}
+  roles:
+    type: map
+    nullable: false
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
     mapping:
       Admin:
         type: seq
+        nullable: false
+        required: true
         sequence:
           - type: text
+            nullable: false
+            unique: true
       Alert:
         type: seq
+        nullable: false
         sequence:
           - type: text
+            nullable: false
+            unique: true
       DCS Admin:
         type: seq
+        nullable: false
+        required: true
         sequence:
           - type: text
+            nullable: false
+            unique: true
       GameMaster:
         type: seq
+        nullable: false
         sequence:
           - type: text
+            nullable: false
+            unique: true
       DCS:
         type: seq
+        nullable: false
         sequence:
           - type: text
+            nullable: false
+            unique: true
+      regex;(.*):
+        type: seq
+        nullable: false
+        sequence:
+          - type: text
+            nullable: false
+            unique: true

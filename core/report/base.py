@@ -10,8 +10,9 @@ import psycopg
 import sys
 
 from abc import ABC, abstractmethod
+from contextlib import suppress
 from core import utils, Channel
-from discord import Interaction, SelectOption
+from discord import Interaction, SelectOption, ButtonStyle
 from discord.ui import View, Button, Select, Item
 from discord.utils import MISSING
 from typing import Optional, TYPE_CHECKING, Any, cast, Union
@@ -63,19 +64,117 @@ class Report:
                         self.load_report_def(element['include'].get('plugin', plugin), element['include']['filename'])
                     )[1]
         return filename, report_def
+<<<<<<< HEAD
 
+=======
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
     async def render(self, *args, **kwargs) -> ReportEnv:
-        if 'input' in self.report_def:
-            self.env.params = await parse_input(self, kwargs, self.report_def['input'])
+        # Cache the `report_def` locally for faster lookups and readability
+        report_def = self.report_def
+        env = self.env
+
+        # Parse input parameters or copy kwargs
+        if 'input' in report_def:
+            env.params = await parse_input(self, kwargs, report_def['input'])
         else:
-            self.env.params = kwargs.copy()
-        # add the bot to be able to access the whole environment from inside the report
-        self.env.params['bot'] = self.bot
-        # format the embed
-        if 'color' in self.report_def:
-            self.env.embed = discord.Embed(color=getattr(discord.Color, self.report_def.get('color', 'blue'))())
+            env.params = kwargs.copy()
+
+        # Add bot reference to params
+        env.params['bot'] = self.bot
+
+        # Create an embed with optional color
+        embed_color = getattr(discord.Color, report_def.get('color', 'blue'), discord.Color.blue)()
+        env.embed = discord.Embed(color=embed_color)
+
+        # Predefine keys that need formatting and apply transformations
+        formatted_keys = {
+            'title': {'max_length': 256, 'setter': lambda val: setattr(env.embed, 'title', val)},
+            'description': {'max_length': 4096, 'setter': lambda val: setattr(env.embed, 'description', val)},
+            'url': {'setter': lambda val: setattr(env.embed, 'url', val)},
+            'img': {'setter': lambda val: env.embed.set_thumbnail(url=val)},
+            'footer': {
+                'setter': lambda val: env.embed.set_footer(
+                    text=f"{env.embed.footer.text or ''}\n{val}"[:2048]
+                )
+            },
+        }
+
+        for key, config in formatted_keys.items():
+            if value := report_def.get(key):
+                formatted_value = utils.format_string(value, **env.params)
+                if 'max_length' in config:
+                    formatted_value = formatted_value[:config['max_length']]
+                config['setter'](formatted_value)
+
+        # Process mentions
+        if mention := report_def.get('mention'):
+            if isinstance(mention, int):
+                env.mention = f"<@&{mention}>"
+            else:
+                env.mention = ''.join([f"<@&{x}>" for x in mention])
+
+        # Handle the 'elements' section
+        if elements := report_def.get('elements'):
+            for element in elements:
+                await self._process_element(element, env.params)
+
+        return env
+
+    async def _process_element(self, element, params):
+        """
+        Helper function to process individual elements sequentially.
+        """
+        # Resolve the element's class and arguments
+        element_class, element_args = self._resolve_element_class_and_args(element, params)
+
+        if not element_class:
+            return  # Skip if the class couldn't be resolved
+
+        # Filter arguments for the __init__ method
+        init_args = self._filter_args(element_args, element_class.__init__)
+        instance = element_class(self.env, **init_args)
+
+        if not isinstance(instance, ReportElement):
+            raise UnknownReportElement(element.get('class', str(element)))
+
+        # Filter arguments for the render method
+        render_args = self._filter_args(element_args, instance.render)
+
+        # Render the element and handle exceptions
+        try:
+            await instance.render(**render_args)
+        except (TimeoutError, asyncio.TimeoutError):
+            self.log.error(f"Timeout while processing report {self.filename}! Some elements might be empty.")
+        except psycopg.OperationalError:
+            self.log.error(f"Database error while processing report {self.filename}! Some elements might be empty.")
+        except Exception:
+            self.log.error(f"Error while processing report {self.filename}! Some elements might be empty.",
+                           exc_info=True)
+            raise
+
+    @staticmethod
+    def _resolve_element_class_and_args(element, params):
+        """
+        Resolves the class and arguments for a given element.
+        """
+        if isinstance(element, dict):
+            element_args = parse_params(params, element.get('params', params.copy()))
+            class_name = element.get('class') or element.get('type')
+            element_class = None
+
+            # Dynamically retrieve the class instance
+            if class_name:
+                element_class = (
+                    utils.str_to_class(class_name)
+                    if 'class' in element
+                    else getattr(sys.modules['core.report.elements'], class_name, None)
+                )
+        elif isinstance(element, str):
+            element_class = getattr(sys.modules['core.report.elements'], element, None)
+            element_args = params.copy()
         else:
+<<<<<<< HEAD
             self.env.embed = discord.Embed()
         for name, item in self.report_def.items():
             # parse report parameters
@@ -141,6 +240,22 @@ class Report:
                     else:
                         raise ClassNotFound(element['class'])
         return self.env
+=======
+            raise UnknownReportElement(str(element))
+
+        if not element_class:
+            raise ClassNotFound(str(element.get('class', element)))
+
+        return element_class, element_args
+
+    @staticmethod
+    def _filter_args(args, method):
+        """
+        Filters arguments based on a method's signature, ensuring compatibility.
+        """
+        signature = inspect.signature(method).parameters
+        return {name: value for name, value in args.items() if name in signature}
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
 
 class Pagination(ABC):
@@ -166,7 +281,7 @@ class PaginationReport(Report):
         if 'pagination' not in self.report_def:
             raise PaginationReport.NoPaginationInformation
 
-    async def read_param(self, param: dict, **kwargs) -> tuple[str, list]:
+    async def read_param(self, param: dict, **kwargs) -> tuple[str, list[str]]:
         name = param['name']
         values = None
         if 'sql' in param:
@@ -189,7 +304,7 @@ class PaginationReport(Report):
     class PaginationReportView(View):
         def __init__(self, name, values, index, func, keep_image: bool, *args, **kwargs):
             super().__init__()
-            self.log = logging.getLogger(__name__)
+            self.log = logging.getLogger(f"{self.__class__.__module__}.{self.__class__.__name__}")
             self.name = name
             self.values = values
             self.index = index
@@ -221,11 +336,11 @@ class PaginationReport(Report):
             for child, new_state in zip(target_children, new_states):
                 child.disabled = new_state
 
-        async def render(self, value) -> ReportEnv:
+        async def render(self, value: str) -> ReportEnv:
             self.kwargs[self.name] = value if value != 'All' else None
             return await self.func(*self.args, **self.kwargs)
 
-        async def paginate(self, value, interaction: discord.Interaction):
+        async def paginate(self, value: str, interaction: discord.Interaction):
             # noinspection PyUnresolvedReferences
             await interaction.response.defer()
             env = await self.render(value)
@@ -257,27 +372,32 @@ class PaginationReport(Report):
             self.index = int(select.values[0])
             await self.paginate(self.values[self.index], interaction)
 
-        @discord.ui.button(label="<<", style=discord.ButtonStyle.secondary)
+        # noinspection PyTypeChecker
+        @discord.ui.button(label="<<", style=ButtonStyle.secondary)
         async def on_start(self, interaction: Interaction, _: Button):
             self.index = 0
             await self.paginate(self.values[self.index], interaction)
 
-        @discord.ui.button(label="Back", style=discord.ButtonStyle.primary)
+        # noinspection PyTypeChecker
+        @discord.ui.button(label="Back", style=ButtonStyle.primary)
         async def on_left(self, interaction: Interaction, _: Button):
             self.index -= 1
             await self.paginate(self.values[self.index], interaction)
 
-        @discord.ui.button(label="Next", style=discord.ButtonStyle.primary)
+        # noinspection PyTypeChecker
+        @discord.ui.button(label="Next", style=ButtonStyle.primary)
         async def on_right(self, interaction: Interaction, _: Button):
             self.index += 1
             await self.paginate(self.values[self.index], interaction)
 
-        @discord.ui.button(label=">>", style=discord.ButtonStyle.secondary)
+        # noinspection PyTypeChecker
+        @discord.ui.button(label=">>", style=ButtonStyle.secondary)
         async def on_end(self, interaction: Interaction, _: Button):
             self.index = len(self.values) - 1
             await self.paginate(self.values[self.index], interaction)
 
-        @discord.ui.button(label="Quit", style=discord.ButtonStyle.red)
+        # noinspection PyTypeChecker
+        @discord.ui.button(label="Quit", style=ButtonStyle.red)
         async def on_cancel(self, interaction: Interaction, _: Button):
             self.index = -1
             # noinspection PyUnresolvedReferences
@@ -332,17 +452,14 @@ class PaginationReport(Report):
                 await view.wait()
             else:
                 message = None
+            return self.env
         except Exception:
             self.log.error(f"Exception while processing report {self.filename}!")
             raise
         finally:
-            try:
-                if message:
+            if message:
+                with suppress(discord.NotFound):
                     await message.delete()
-            except discord.NotFound:
-                pass
-        return self.env
-
 
 class PersistentReport(Report):
 

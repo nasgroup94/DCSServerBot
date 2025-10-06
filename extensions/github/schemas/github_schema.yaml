@@ -1,7 +1,16 @@
 schema;github_schema:
   type: map
+<<<<<<< HEAD
   mapping:
     enabled: {type: bool}
     repo: {type: str, required: true}
     target: {type: str, required: true}
     filter: {type: str}
+=======
+  nullable: false
+  mapping:
+    enabled: {type: bool, nullable: false}
+    repo: {type: url, required: true, nullable: false}
+    target: {type: str, required: true, nullable: false, range: {min: 1}, func: dir_exists}
+    filter: {type: str, nullable: false, range: {min: 1}}
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b

@@ -35,6 +35,7 @@ class HeaderWidget:
         self.log = service.log
 
     def __rich__(self) -> Panel:
+        config = self.service.get_config().get('header', {})
         grid = Table.grid(expand=True)
         grid.add_column(justify="center", ratio=1)
         grid.add_column(justify="right")
@@ -44,11 +45,12 @@ class HeaderWidget:
                 message += "Cluster Master | "
             else:
                 message += "Cluster Agent | "
-        message += (f"DCSServerBot Version {self.node.bot_version}.{self.node.sub_version} | "
-                    f"DCS Version {self.service.dcs_version}[/]")
+        message += f"DCSServerBot Version {self.node.bot_version}.{self.node.sub_version}"
+        if self.node.dcs_version:
+            message += f" | DCS Version {self.node.dcs_version}[/]"
         grid.add_row(message, datetime.now().ctime().replace(":", "[blink]:[/]"))
-        return Panel(grid, style=self.service.get_config().get("header", {}).get("background", "white on navy_blue"),
-                     border_style=self.service.get_config().get("header", {}).get("border", "white"))
+        return Panel(grid, style=config.get("background", "white on navy_blue"),
+                     border_style=config.get("border", "white"))
 
 
 class ServersWidget:
@@ -60,6 +62,7 @@ class ServersWidget:
         self.bus = service.bus
 
     def __rich__(self) -> Panel:
+        config = self.service.get_config().get("servers", {})
         table = Table(expand=True, show_edge=False)
         table.add_column("Status", justify="center", min_width=8)
         table.add_column("Server Name", justify="left", no_wrap=True)
@@ -68,6 +71,8 @@ class ServersWidget:
         if self.service.node.master and self.service.is_multinode():
             table.add_column("Node", justify="left", min_width=8)
         for server_name, server in self.bus.servers.items():
+            if config.get('hide_remote_servers', False) and server.is_remote:
+                continue
             name = re.sub(self.bus.filter['server_name'], '', server.name).strip()
             mission_name = re.sub(self.bus.filter['mission_name'], '',
                                   server.current_mission.name).strip() if server.current_mission else "n/a"
@@ -78,8 +83,13 @@ class ServersWidget:
             else:
                 table.add_row(server.status.name.title(), name, mission_name, num_players)
         return Panel(table, padding=1,
+<<<<<<< HEAD
                      style=self.service.get_config().get("servers", {}).get("background", "white on dark_blue"),
                      border_style=self.service.get_config().get("servers", {}).get("border", "white"))
+=======
+                     style=config.get("background", "white on dark_blue"),
+                     border_style=config.get("border", "white"))
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
 
 class NodeWidget:
@@ -93,6 +103,7 @@ class NodeWidget:
         self.log = service.log
 
     def __rich__(self) -> Panel:
+        config = self.service.get_config().get("nodes", {})
         table = Table(expand=True, show_edge=False)
         table.add_column("Node ([green]Master[/])", justify="left")
         table.add_column("Servers", justify="left")
@@ -112,8 +123,13 @@ class NodeWidget:
             else:
                 table.add_row(node.name, f"{servers[node.name]}/{len(node.instances)}")
         return Panel(table, padding=1,
+<<<<<<< HEAD
                      style=self.service.get_config().get("nodes", {}).get("background", "white on dark_blue"),
                      border_style=self.service.get_config().get("nodes", {}).get("border", "white"))
+=======
+                     style=config.get("background", "white on dark_blue"),
+                     border_style=config.get("border", "white"))
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
 
 class LogWidget:
@@ -125,9 +141,16 @@ class LogWidget:
         self.buffer: list[tuple[int, "ConsoleRenderable"]] = []
         self.handler = service.old_handler
         self.console = Console(record=True)
+<<<<<<< HEAD
         self.panel = Panel("", height=self.console.options.max_height,
                            style=self.service.get_config().get("log", {}).get("background", "white on grey15"),
                            border_style=self.service.get_config().get("log", {}).get("border", "white"))
+=======
+        config = self.service.get_config().get("log", {})
+        self.panel = Panel("", height=self.console.options.max_height,
+                           style=config.get("background", "white on grey15"),
+                           border_style=config.get("border", "white"))
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         self.previous_size = self.console.size
 
     def _emit(self, record: logging.LogRecord) -> ConsoleRenderable:
@@ -182,6 +205,7 @@ class LogWidget:
 
     def __rich_console__(self, _: Console, options: ConsoleOptions) -> RenderResult:
         if not self.queue.empty() or self._check_size_change():
+<<<<<<< HEAD
             max_displayable_height = options.max_height - 2
             available_height = max_displayable_height
 
@@ -192,6 +216,20 @@ class LogWidget:
                 self.buffer.append((renderable_lines, log_renderable))
                 available_height -= renderable_lines
 
+=======
+            config = self.service.get_config()
+
+            max_displayable_height = options.max_height - 2
+            available_height = max_displayable_height
+
+            while not self.queue.empty():
+                record: logging.LogRecord = self.queue.get()
+                log_renderable = self._emit(record)
+                renderable_lines = self._measure_renderable_lines(log_renderable, options.max_width)
+                self.buffer.append((renderable_lines, log_renderable))
+                available_height -= renderable_lines
+
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
             # Adjust the buffer to fit into max_displayable_height
             total_height_used = sum(lines for lines, _ in self.buffer)
             while total_height_used > max_displayable_height and self.buffer:
@@ -200,13 +238,18 @@ class LogWidget:
 
             log_content = Group(*(renderable for _, renderable in self.buffer))
             self.panel = Panel(log_content, height=options.max_height,
+<<<<<<< HEAD
                         style=self.service.get_config().get("log", {}).get("background", "white on grey15"),
                         border_style=self.service.get_config().get("log", {}).get("border", "white"))
+=======
+                        style=config.get("log", {}).get("background", "white on grey15"),
+                        border_style=config.get("log", {}).get("border", "white"))
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
         yield self.panel
 
 
-@ServiceRegistry.register()
+@ServiceRegistry.register(depends_on=[ServiceBus])
 class Dashboard(Service):
 
     def __init__(self, node):
@@ -217,23 +260,26 @@ class Dashboard(Service):
         self.queue = None
         self.log_handler = None
         self.old_handler = None
-        self.dcs_branch = None
-        self.dcs_version = None
         self.update_task = None
+        self.header_widget = None
+        self.servers_widget = None
+        self.log_widget = None
         self.stop_event = asyncio.Event()
 
     def is_multinode(self):
         return len(self.node.all_nodes) > 1
 
+    def create_widgets(self):
+        self.header_widget = HeaderWidget(self)
+        self.servers_widget = ServersWidget(self)
+        self.log_widget = LogWidget(self)
+
     def create_layout(self):
-        header = HeaderWidget(self)
-        servers = ServersWidget(self)
-        log = LogWidget(self)
         layout = Layout()
         layout.split(
-            Layout(header, name="header", size=3),
-            Layout(servers, name="main"),
-            Layout(log, name="log", ratio=2, minimum_size=5)
+            Layout(self.header_widget, name="header", size=3),
+            Layout(self.servers_widget, name="main", size=len(self.bus.servers) + 6),
+            Layout(self.log_widget, name="log", ratio=2, minimum_size=5)
         )
         if self.node.master and self.is_multinode():
             servers = ServersWidget(self)
@@ -262,7 +308,7 @@ class Dashboard(Service):
         await super().start()
         self.bus = ServiceRegistry.get(ServiceBus)
         self.hook_logging()
-        self.dcs_branch, self.dcs_version = await self.node.get_dcs_branch_and_version()
+        self.create_widgets()
         self.layout = self.create_layout()
         self.stop_event.clear()
         self.update_task = asyncio.create_task(self.update())
@@ -283,8 +329,20 @@ class Dashboard(Service):
 
     async def update(self):
         try:
+<<<<<<< HEAD
             with Live(self.layout, refresh_per_second=1, screen=True):
                 await self.stop_event.wait()
+=======
+            previous_server_count = len(self.bus.servers)
+            with Live(self.layout, refresh_per_second=1, screen=True) as live:
+                while not self.stop_event.is_set():
+                    current_server_count = len(self.bus.servers)
+                    if current_server_count != previous_server_count:
+                        self.layout = self.create_layout()
+                        live.update(self.layout)
+                        previous_server_count = current_server_count
+                    await asyncio.sleep(0.5)
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         except Exception as ex:
             self.log.exception(ex)
             await self.stop()

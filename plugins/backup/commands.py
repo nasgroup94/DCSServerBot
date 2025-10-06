@@ -28,6 +28,7 @@ async def backup_autocomplete(interaction: discord.Interaction, current: str) ->
         return choices[:25]
     except Exception as ex:
         interaction.client.log.exception(ex)
+        return []
 
 
 async def date_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
@@ -80,6 +81,7 @@ class Backup(Plugin):
             node = self.node
         # noinspection PyUnresolvedReferences
         await interaction.response.defer(ephemeral=ephemeral, thinking=True)
+        msg = await interaction.followup.send(_("Backup of {} started ...").format(what.title()), ephemeral=ephemeral)
         try:
             rc = await self.bus.send_to_node_sync({
                 "command": "rpc",
@@ -87,10 +89,9 @@ class Backup(Plugin):
                 "method": f"backup_{what}"
             }, node=node.name, timeout=300)
             assert rc['return'] is True
-            await interaction.followup.send(_("Backup of {} completed.").format(what.title()), ephemeral=ephemeral)
+            await msg.edit(content=_("Backup of {} completed.").format(what.title()))
         except Exception:
-            await interaction.followup.send(
-                _("Backup of {} failed. Please check log for details.").format(what.title()), ephemeral=ephemeral)
+            await msg.edit(content=_("Backup of {} failed. Please check log for details.").format(what.title()))
 
     @command(description=_('Recover your data from an existing backup'))
     @app_commands.guild_only()

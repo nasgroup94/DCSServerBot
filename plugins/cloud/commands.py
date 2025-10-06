@@ -10,14 +10,21 @@ import shutil
 import ssl
 
 from contextlib import suppress
+<<<<<<< HEAD
 from core import Plugin, utils, TEventListener, PaginationReport, Group, DEFAULT_TAG, PluginConfigurationError, \
     get_translation, ServiceRegistry
+=======
+from core import Plugin, utils, PaginationReport, Group, DEFAULT_TAG, PluginConfigurationError, \
+    get_translation, command
+from datetime import timedelta
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 from discord import app_commands, DiscordServerError
 from discord.ext import commands, tasks
 from psycopg.rows import dict_row
 from services.bot import DCSServerBot, BotService
 from services.bot.dummy import DummyBot
 from typing import Type, Any, Optional, Union
+from urllib.parse import quote
 
 from .listener import CloudListener
 from .logger import CloudLoggingHandler
@@ -25,9 +32,9 @@ from .logger import CloudLoggingHandler
 _ = get_translation(__name__.split('.')[1])
 
 
-class Cloud(Plugin):
+class Cloud(Plugin[CloudListener]):
 
-    def __init__(self, bot: DCSServerBot, eventlistener: Type[TEventListener] = None):
+    def __init__(self, bot: DCSServerBot, eventlistener: Type[CloudListener] = None):
         super().__init__(bot, eventlistener)
         if not len(self.locals):
             raise commands.ExtensionFailed(self.plugin_name, FileNotFoundError("No cloud.yaml available."))
@@ -88,7 +95,6 @@ class Cloud(Plugin):
             self.cloud_sync.cancel()
         if self.config.get('dcs-ban', False) or self.config.get('discord-ban', False):
             self.cloud_bans.cancel()
-        # noinspection PyAsyncCall
         asyncio.create_task(self.session.close())
         await super().cog_unload()
 
@@ -102,15 +108,24 @@ class Cloud(Plugin):
 
     async def get(self, request: str) -> Any:
         url = f"{self.base_url}/{request}"
+<<<<<<< HEAD
         async with self.session.get(url, proxy=ServiceRegistry.get(BotService).proxy,
                                     proxy_auth=ServiceRegistry.get(BotService).proxy_auth) as response:
+=======
+        async with self.session.get(url, proxy=self.node.proxy, proxy_auth=self.node.proxy_auth) as response:
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
             return await response.json()
 
     async def post(self, request: str, data: Any) -> Any:
         async def send(element: dict):
             url = f"{self.base_url}/{request}/"
+<<<<<<< HEAD
             async with self.session.post(url, json=element, proxy=ServiceRegistry.get(BotService).proxy,
                                          proxy_auth=ServiceRegistry.get(BotService).proxy_auth) as response:
+=======
+            async with self.session.post(
+                    url, json=element, proxy=self.node.proxy, proxy_auth=self.node.proxy_auth) as response:
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                 return await response.json()
 
         if isinstance(data, list):
@@ -161,7 +176,7 @@ class Cloud(Plugin):
         ephemeral = utils.get_ephemeral(interaction)
         if 'token' not in self.config:
             # noinspection PyUnresolvedReferences
-            await interaction.response.send_message(_('No cloud sync configured!'), ephemeral=ephemeral)
+            await interaction.response.send_message(_('No cloud sync configured!'), ephemeral=True)
             return
         async with self.apool.connection() as conn:
             async with conn.transaction():
@@ -218,9 +233,63 @@ class Cloud(Plugin):
         except aiohttp.ClientError:
             await interaction.followup.send(_('Cloud not connected!'), ephemeral=True)
 
+    @command(description=_('List registered DCS servers'))
+    @app_commands.guild_only()
+    @utils.app_has_role('DCS Admin') # TODO: change that to DCS
+    async def serverlist(self, interaction: discord.Interaction, search: Optional[str] = None):
+
+        def format_servers(servers: list[dict], marker, marker_emoji) -> discord.Embed:
+            embed = discord.Embed(title=_('DCS Servers'), color=discord.Color.blue())
+            for idx, server in enumerate(servers):
+                name = chr(0x31 + idx) + '\u20E3' + f" {utils.escape_string(server['server_name'])} [{server['num_players']}/{server['max_players']}]"
+                name += (' 🔐' if server['password'] else ' 🔓') + '\n'
+                value = f"IP/Port:  {server['ipaddr']}:{server['port']}\n"
+                value += f"Map:      {server['theatre']}\n"
+                value += f"Time:     {timedelta(seconds=server['time_in_mission'])}\n"
+                if server['time_to_restart'] != -1:
+                    value += f"Restart:  {timedelta(seconds=server['time_to_restart'])}\n"
+                embed.add_field(name=name, value='```' + value + '```', inline=False)
+            return embed
+
+        async def display_server(server: dict):
+            embed = discord.Embed(color=discord.Color.blue())
+            embed.title = f"{utils.escape_string(server['server_name'])} [{server['num_players']}/{server['max_players']}]"
+            embed.add_field(name=_("Address"), value=f"{server['ipaddr']}:{server['port']}", inline=False)
+            embed.add_field(name=_("Map"), value=f"{server['theatre']}", inline=False)
+            embed.add_field(name=_("Mission"), value=f"{utils.escape_string(server['mission'])}", inline=False)
+            embed.add_field(name=_("Time"), value=f"{timedelta(seconds=server['time_in_mission'])}", inline=False)
+            if server['time_to_restart'] != -1:
+                embed.add_field(name=_("Restart in"), value=f"{timedelta(seconds=server['time_to_restart'])}", inline=False)
+            msg = await interaction.original_response()
+            await msg.edit(embed=embed, delete_after=self.bot.locals.get('message_autodelete'))
+
+        # noinspection PyUnresolvedReferences
+        await interaction.response.defer()
+        try:
+            query = f'serverlist?dcs_version={self.node.dcs_version}'
+            if search:
+                query += f'&wildcard={quote(search)}'
+            else:
+                query += f'&guild_id={self.node.guild_id}'
+            response = await self.get(query)
+            if not len(response):
+                if not search:
+                    await interaction.followup.send(_('No servers of this group are active.'), ephemeral=True)
+                else:
+                    await interaction.followup.send(
+                        _('No server found with the name "*{search}*".').format(search=search), ephemeral=True)
+                return
+            n = await utils.selection_list(interaction, response, format_servers)
+            if n >= 0:
+                await display_server(response[n])
+        except aiohttp.ClientError:
+            await interaction.followup.send(_('Cloud not connected!'), ephemeral=True)
+
+
     @tasks.loop(minutes=15.0)
     async def cloud_bans(self):
         try:
+<<<<<<< HEAD
             if self.config.get('dcs-ban', False):
                 all_bans: dict = await self.get('bans')
                 self_bans: set = {x['ucid'] for x in await self.bus.bans() if x['banned_by'] == self.plugin_name}
@@ -235,20 +304,56 @@ class Cloud(Plugin):
             elif self.config.get('watchlist_only', False):
                 all_bans: dict = await self.get('bans')
                 external_bans: set = {ban['ucid'] for ban in all_bans}
+=======
+            banlist = self.config.get('banlist', 'both').lower()
+            if banlist == 'both':
+                banlist = None
+            if self.config.get('dcs-ban', False):
+                dgsa_bans = {item['ucid']: item for item in await self.get('bans')}
+                local_bans = {item['ucid']: item for item in await self.bus.bans(expired=True) if item['banned_by'] == self.plugin_name}
+                # filter bans by scope
+                to_ban: set = {
+                    ucid for ucid, ban in dgsa_bans.items()
+                    if (ban['scope'] == 'Both' or not banlist or ban['scope'].lower() == banlist)
+                }
+                # find UCIDs to ban (in DGsA bans but not in local bans)
+                for ucid in to_ban - local_bans.keys():
+                    reason = dgsa_bans[ucid]['reason']
+                    await self.bus.ban(ucid=ucid, reason='DGSA: ' + reason, banned_by=self.plugin_name)
+                # find UCIDs to unban (in local bans but not in DGSA bans)
+                for ucid in local_bans.keys() - to_ban:
+                    await self.bus.unban(ucid)
+            elif self.config.get('watchlist_only', False):
+                dgsa_bans = {item['ucid']: item for item in await self.get('bans')}
+                # filter bans by scope
+                to_ban: set = {
+                    ucid for ucid, ban in dgsa_bans.items()
+                    if (ban['scope'] == 'Both' or not banlist or ban['scope'].lower() == banlist)
+                }
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                 async with self.apool.connection() as conn:
                     cursor = await conn.execute("SELECT player_ucid FROM watchlist WHERE created_by = 'DGSA'")
                     watches = set([row[0] for row in await cursor.fetchall()])
                     async with conn.transaction():
                         # find watches to add
+<<<<<<< HEAD
                         for ucid in external_bans - watches:
                             reason = next(ban['reason'] for ban in all_bans if ban['ucid'] == ucid)
+=======
+                        for ucid in to_ban - watches:
+                            reason = dgsa_bans[ucid]['reason']
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                             await conn.execute("""
                                 INSERT INTO watchlist (player_ucid, reason, created_by) 
                                 VALUES (%s, %s, %s)
                                 ON CONFLICT (player_ucid) DO NOTHING
                             """, (ucid, reason, 'DGSA'))
                         # find watches to remove
+<<<<<<< HEAD
                         for ucid in watches - external_bans:
+=======
+                        for ucid in watches - to_ban:
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                             await conn.execute("DELETE FROM watchlist WHERE player_ucid = %s", (ucid,))
             if self.config.get('discord-ban', False):
                 bans: dict = await self.get('discord-bans')
@@ -263,8 +368,15 @@ class Cloud(Plugin):
                 for user in users_to_ban - banned_users - {self.bot.owner_id}:
                     reason = next(x['reason'] for x in bans if x['discord_id'] == user.id)
                     await guild.ban(user, reason='DGSA: ' + reason)
+<<<<<<< HEAD
         except Exception as ex:
             self.log.exception(ex)
+=======
+        except aiohttp.ClientError:
+            self.log.warning("Cloud service unavailable.")
+        except discord.Forbidden:
+            self.log.error('DCSServerBot needs the "Ban Members" permission.')
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
     @cloud_bans.before_loop
     async def before_cloud_bans(self):
@@ -324,7 +436,10 @@ class Cloud(Plugin):
                     num_bots = row[0]
                     num_servers = row[1]
         try:
-            _, dcs_version = await self.node.get_dcs_branch_and_version()
+            if 'DCS' in self.node.locals:
+                _, dcs_version = await self.node.get_dcs_branch_and_version()
+            else:
+                dcs_version = ""
             # noinspection PyUnresolvedReferences
             bot = {
                 "guild_id": self.bot.guilds[0].id,

@@ -23,7 +23,7 @@ class DummyBot:
         self.plugins = self.node.plugins
         self.locals = locals | {'automatch': False}
         self.bus = ServiceRegistry.get(ServiceBus)
-        self.eventListeners: list[EventListener] = self.bus.eventListeners
+        self.eventListeners: set[EventListener] = self.bus.eventListeners
         self.loop = self.bus.loop
         self._roles = None
         self.setup = asyncio.Event()
@@ -37,7 +37,6 @@ class DummyBot:
     async def start(self):
         self.log.warning("This installation does not use a Discord bot!")
         self.setup.clear()
-        # noinspection PyAsyncCall
         asyncio.create_task(self.setup_hook())
 
     async def close(self):
@@ -111,20 +110,6 @@ class DummyBot:
 
     def get_admin_channel(self, server: Server) -> None:
         ...
-
-    async def get_ucid_by_name(self, name: str) -> tuple[Optional[str], Optional[str]]:
-        async with self.apool.connection() as conn:
-            search = f'%{name}%'
-            cursor = await conn.execute("""
-                SELECT ucid, name FROM players 
-                WHERE LOWER(name) like LOWER(%s) 
-                ORDER BY last_seen DESC LIMIT 1
-            """, (search, ))
-            if cursor.rowcount >= 1:
-                res = await cursor.fetchone()
-                return res[0], res[1]
-            else:
-                return None, None
 
     async def get_member_or_name_by_ucid(self, ucid: str, verified: bool = False) -> Optional[DummyMember]:
         return self.get_member_by_ucid(ucid, verified)

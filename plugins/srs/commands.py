@@ -1,7 +1,8 @@
 import discord
+from charset_normalizer.api import explain_handler
 
-from core import Plugin, PluginRequiredError, TEventListener, PluginInstallationError, Group, get_translation, utils, \
-    Server, Coalition, Status
+from core import (Plugin, PluginRequiredError, PluginInstallationError, Group, get_translation, utils, Server,
+                  Coalition, Status)
 from discord import app_commands
 from extensions.srs import SRS as SRSExt
 from services.bot import DCSServerBot
@@ -12,9 +13,9 @@ from .listener import SRSEventListener
 _ = get_translation(__name__.split('.')[1])
 
 
-class SRS(Plugin):
+class SRS(Plugin[SRSEventListener]):
 
-    def __init__(self, bot: DCSServerBot, eventlistener: Type[TEventListener] = None):
+    def __init__(self, bot: DCSServerBot, eventlistener: Type[SRSEventListener] = None):
         super().__init__(bot, eventlistener)
         if not self.get_config(plugin_name='missionstats').get('enabled', True):
             raise PluginInstallationError(plugin=self.plugin_name, reason="MissionStats not enabled!")
@@ -30,7 +31,9 @@ class SRS(Plugin):
         sides = utils.get_sides(interaction.client, interaction, server)
         if Coalition(coalition) not in sides:
             # noinspection PyUnresolvedReferences
-            await interaction.response.send_message(_("You are not allowed to see the {} players.").format(coalition))
+            await interaction.response.send_message(
+                _("You are not allowed to see the {} players.").format(coalition), ephemeral=True
+            )
             return
         embed = discord.Embed(color=discord.Color.blue())
         embed.title = _("{} Players on SRS").format(coalition.title())
@@ -47,10 +50,12 @@ class SRS(Plugin):
             embed.add_field(name=_("Radios"), value=radios)
             embed.set_footer(text=_("Only the first 2 radios are displayed per user."))
             # noinspection PyUnresolvedReferences
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(
+                embed=embed, delete_after=self.bot.locals.get('message_autodelete')
+            )
         else:
             # noinspection PyUnresolvedReferences
-            await interaction.response.send_message(_("No {} players on SRS.").format(coalition))
+            await interaction.response.send_message(_("No {} players on SRS.").format(coalition), ephemeral=True)
 
     @srs.command(description=_('Update DCS-SRS'))
     @app_commands.guild_only()
@@ -86,7 +91,7 @@ class SRS(Plugin):
         config = server.instance.locals.get('extensions', {}).get('SRS', {})
         modal = utils.ConfigModal(title=_("SRS Configuration"),
                                   config=SRSExt.CONFIG_DICT,
-                                  default=config)
+                                  old_values=config)
         # noinspection PyUnresolvedReferences
         await interaction.response.send_modal(modal)
         if await modal.wait():
@@ -115,7 +120,7 @@ class SRS(Plugin):
         if 'SRS' not in await server.init_extensions():
             # noinspection PyUnresolvedReferences
             await interaction.response.send_message(
-                _("SRS not installed on server {}").format(server.display_name), ephemeral=ephemeral)
+                _("SRS not installed on server {}").format(server.display_name), ephemeral=True)
             return
         if server.status in [Status.STOPPED, Status.SHUTDOWN]:
             config = await self._configure(interaction, server, enabled, autoconnect)
@@ -126,7 +131,7 @@ class SRS(Plugin):
             # noinspection PyUnresolvedReferences
             await interaction.response.send_message(
                 _("Server {} needs to be shut down to configure SRS.").format(server.display_name),
-                ephemeral=ephemeral)
+                ephemeral=True)
 
 
 async def setup(bot: DCSServerBot):

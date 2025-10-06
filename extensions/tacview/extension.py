@@ -15,11 +15,16 @@ from typing import Optional, Any
 _ = get_translation(__name__.split('.')[1])
 
 TACVIEW_DEFAULT_DIR = os.path.normpath(os.path.expandvars(os.path.join('%USERPROFILE%', 'Documents', 'Tacview')))
+<<<<<<< HEAD
 TACVIEW_EXPORT_LINE = "local Tacviewlfs=require('lfs');dofile(Tacviewlfs.writedir()..'Scripts/TacviewGameExport.lua')\n"
 TACVIEW_PATTERN_MATCH = r'Successfully saved \[(?P<filename>.*?\.acmi)\]'
 
 rtt_ports: dict[int, str] = dict()
 rcp_ports: dict[int, str] = dict()
+=======
+TACVIEW_EXPORT_LINE = "local Tacviewlfs=require('lfs');dofile(Tacviewlfs.writedir()..'Scripts/TacviewGameExport.lua')"
+TACVIEW_PATTERN_MATCH = r'Successfully saved \[(?P<filename>.*?\.acmi)\]'
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
 __all__ = [
     "Tacview",
@@ -28,34 +33,41 @@ __all__ = [
 
 
 class Tacview(Extension):
+    _rtt_ports: dict[int, str] = dict()
+    _rcp_ports: dict[int, str] = dict()
 
     CONFIG_DICT = {
         "tacviewRealTimeTelemetryPort": {
             "type": int,
             "label": _("Tacview Port"),
             "placeholder": _("Unique port number for Tacview"),
-            "required": True
+            "required": True,
+            "default": 42674
         },
         "tacviewRealTimeTelemetryPassword": {
             "type": str,
             "label": _("Tacview Password"),
             "placeholder": _("Password for Tacview, . for none"),
+            "default": ""
         },
         "tacviewRemoteControlPort": {
             "type": int,
             "label": _("Remote Control Port"),
-            "placeholder": _("Unique port number for remote control")
+            "placeholder": _("Unique port number for remote control"),
+            "default": 42675
         },
         "tacviewRemoteControlPassword": {
             "type": str,
             "label": _("Remote Control Password"),
             "placeholder": _("Password for remote control, . for none"),
+            "default": ""
         },
         "tacviewPlaybackDelay": {
             "type": int,
             "label": _("Playback Delay"),
             "placeholder": _("Playback delay time"),
-            "required": True
+            "required": True,
+            "default": 0
         }
     }
 
@@ -72,7 +84,6 @@ class Tacview(Extension):
         self.stop_event.clear()
         self.stopped.clear()
         if self.config.get('target'):
-            # noinspection PyAsyncCall
             asyncio.create_task(self.check_log())
         return await super().startup()
 
@@ -122,42 +133,52 @@ class Tacview(Extension):
         return False
 
     async def prepare(self) -> bool:
-        global rtt_ports, rcp_ports
-
         await self.update_instance(False)
         options = self.server.options['plugins']
         dirty = False
+
+        dirty |= self.set_option(options, 'tacviewModuleEnabled', self.config.get('enabled', True))
+        # parse other settings
         for name, value in self.config.items():
             if not name.startswith('tacview'):
                 continue
             if name == 'tacviewExportPath':
                 path = os.path.normpath(os.path.expandvars(self.config.get('tacviewExportPath'))) or TACVIEW_DEFAULT_DIR
                 os.makedirs(path, exist_ok=True)
-                dirty = self.set_option(options, name, path) or dirty
+                dirty |= self.set_option(options, name, path)
             # Unbelievable but true. Tacview can only work with strings as ports.
             elif name in ['tacviewRealTimeTelemetryPort', 'tacviewRemoteControlPort']:
-                dirty = self.set_option(options, name, str(value)) or dirty
+                dirty |= self.set_option(options, name, str(value))
             else:
-                dirty = self.set_option(options, name, value) or dirty
+                dirty |= self.set_option(options, name, value)
 
-        if not options['Tacview'].get('tacviewPlaybackDelay', 0):
+        if parse(self.version) < parse('1.9.5') and options['Tacview'].get('tacviewPlaybackDelay', 0) == 0:
             self.log.warning(
                 f'  => {self.server.name}: tacviewPlaybackDelay is not set, you might see performance issues!')
+        elif int(options['Tacview'].get('tacviewDataCaptureMode', 1)) == 1:
+            self.log.warning(
+                f'  => {self.server.name}: tacviewDataCaptureMode is set to 1, you might see performance issues!')
+
+        if options['Tacview'].get('tacviewPlaybackDelay', 0) > 0 and options['Tacview'].get('tacviewRealTimeTelemetryEnabled', True):
+            self.log.warning(
+                f'  => {self.server.name}: tacviewPlaybackDelay is set, disabling real time telemetry.')
+            dirty |= self.set_option(options, 'tacviewRealTimeTelemetryEnabled', False)
+
         if dirty:
             self.server.options['plugins'] = options
             self.locals = options['Tacview']
         rtt_port = int(self.locals.get('tacviewRealTimeTelemetryPort', 42674))
-        if rtt_ports.get(rtt_port, self.server.name) != self.server.name:
+        if type(self)._rtt_ports.get(rtt_port, self.server.name) != self.server.name:
             self.log.error(f"  =>  {self.server.name}: tacviewRealTimeTelemetryPort {rtt_port} already in use by "
-                           f"server {rtt_ports[rtt_port]}!")
+                           f"server {type(self)._rtt_ports[rtt_port]}!")
             return False
-        rtt_ports[rtt_port] = self.server.name
+        type(self)._rtt_ports[rtt_port] = self.server.name
         rcp_port = int(self.locals.get('tacviewRemoteControlPort', 42675))
-        if rcp_ports.get(rcp_port, self.server.name) != self.server.name:
+        if type(self)._rcp_ports.get(rcp_port, self.server.name) != self.server.name:
             self.log.error(f"  =>  {self.server.name}: tacviewRemoteControlPort {rcp_port} already in use by "
-                           f"server {rcp_ports[rcp_port]}!")
+                           f"server {type(self)._rcp_ports[rcp_port]}!")
             return False
-        rcp_ports[rcp_port] = self.server.name
+        type(self)._rcp_ports[rcp_port] = self.server.name
         return True
 
     @property
@@ -170,7 +191,11 @@ class Tacview(Extension):
                 self._inst_path = os.path.join(os.path.expandvars(self.config.get('installation')))
                 if not os.path.exists(self._inst_path):
                     raise InstallException(
+<<<<<<< HEAD
                         f"The {self.name} installation dir can not be found at {self.config.get('installation')}!")
+=======
+                        f"The {self.name} installation dir could not be found at {self.config.get('installation')}!")
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
             elif sys.platform == 'win32':
                 try:
                     import winreg
@@ -191,7 +216,8 @@ class Tacview(Extension):
 
     async def render(self, param: Optional[dict] = None) -> dict:
         if not self.locals:
-            return {}
+            raise NotImplementedError()
+
         name = 'Tacview'
         if not self.locals.get('tacviewModuleEnabled', True):
             value = 'disabled'
@@ -231,7 +257,7 @@ class Tacview(Extension):
                     # best case we find the default line Tacview put in the Export.lua
                     if line == TACVIEW_EXPORT_LINE:
                         break
-                    # at least we found it, might still be wrong
+                    # at least we found it, it might still be wrong
                     elif not line.strip().startswith('--') and 'TacviewGameExport.lua'.casefold() in line.casefold():
                         break
                 else:
@@ -246,7 +272,11 @@ class Tacview(Extension):
             logfile = os.path.expandvars(
                 self.config.get('log', os.path.join(self.server.instance.home, 'Logs', 'dcs.log'))
             )
+<<<<<<< HEAD
             while not (self.stop_event.is_set() and self.server.status in [Status.RUNNING, Status.PAUSED]):
+=======
+            while not (self.stop_event.is_set() and self.server.status in [Status.RUNNING, Status.PAUSED, Status.SHUTTING_DOWN]):
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                 try:
                     while not os.path.exists(logfile):
                         self.log_pos = 0
@@ -270,7 +300,11 @@ class Tacview(Extension):
                                 return
                             match = self.exp.search(line)
                             if match:
+<<<<<<< HEAD
                                 # noinspection PyAsyncCall
+=======
+                                self.log.debug("TACVIEW pattern found.")
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                                 asyncio.create_task(self.send_tacview_file(match.group('filename')))
                                 if self.stop_event.is_set():
                                     return
@@ -349,10 +383,20 @@ class Tacview(Extension):
                 lines = await infile.readlines()
         except FileNotFoundError:
             lines = []
+<<<<<<< HEAD
         if TACVIEW_EXPORT_LINE not in lines:
             lines.append(TACVIEW_EXPORT_LINE)
+=======
+        for line in lines:
+            if TACVIEW_EXPORT_LINE in line:
+                break
+        else:
+            lines.append(TACVIEW_EXPORT_LINE + '\n')
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
             async with aiofiles.open(export_file, mode='w', encoding='utf-8') as outfile:
                 await outfile.writelines(lines)
+        # load the configuration
+        self.locals = self.load_config()
         self.log.info(f"  => {self.name} {self.version} installed into instance {self.server.instance.name}.")
         return True
 
@@ -389,12 +433,23 @@ class Tacview(Extension):
                     await outfile.writelines(lines_to_keep)
             else:
                 os.remove(export_file)
+<<<<<<< HEAD
+=======
+        options = self.server.options.get('plugins')
+        if options:
+            options['Tacview'] |= {'tacviewModuleEnabled': False}
+            self.server.options['plugins'] = options
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         self.log.info(f"  => {self.name} {version} uninstalled from instance {self.server.instance.name}.")
         return True
 
     async def update_instance(self, force: bool) -> bool:
         version = self.get_inst_version()
+<<<<<<< HEAD
         if parse(version) < parse(self.version):
+=======
+        if parse(self.version) < parse(version):
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
             if force or self.config.get('autoupdate', False):
                 if not await self.uninstall():
                     return False
@@ -414,3 +469,14 @@ class Tacview(Extension):
                 self.log.info(f"  => {self.name}: Instance {self.server.instance.name} is running version "
                               f"{self.version}, where {version} is available!")
         return False
+
+    async def get_ports(self) -> dict:
+        return {
+            "tacviewRealTimeTelemetryPort": self.locals.get('tacviewRealTimeTelemetryPort', 42674),
+            "tacviewRemoteControlPort": self.locals.get('tacviewRemoteControlPort', 42675)
+        } if self.enabled else {}
+
+    async def change_config(self, config: dict):
+        if config.get('target') and not self.config.get('target'):
+            asyncio.create_task(self.check_log())
+        await super().change_config(config)

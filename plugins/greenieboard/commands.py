@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import aiofiles
 import asyncio
 import discord
@@ -14,11 +16,16 @@ from discord.app_commands import Range
 from matplotlib import pyplot as plt
 from psycopg.rows import dict_row
 from services.bot import DCSServerBot
-from typing import Optional, Union
+from typing import Optional, Union, Literal
 
+from . import GRADES
 from .listener import GreenieBoardEventListener
 from .trapsheet import read_trapsheet, parse_filename, plot_trapsheet
 from .views import TrapView
+
+# ruamel YAML support
+from ruamel.yaml import YAML
+yaml = YAML()
 
 _ = get_translation(__name__.split('.')[1])
 
@@ -42,9 +49,10 @@ async def trap_users_autocomplete(interaction: discord.Interaction, current: str
         return choices[:25]
     except Exception as ex:
         interaction.client.log.exception(ex)
+        return []
 
 
-class GreenieBoard(Plugin):
+class GreenieBoard(Plugin[GreenieBoardEventListener]):
 
     def read_locals(self) -> dict:
         config = super().read_locals()
@@ -73,7 +81,8 @@ class GreenieBoard(Plugin):
             self._config[server.node.name][server.instance.name] = default | specific
         return self._config[server.node.name][server.instance.name]
 
-    def plot_trapheet(self, filename: str) -> bytes:
+    @staticmethod
+    def plot_trapheet(filename: str) -> bytes:
         ts = read_trapsheet(filename)
         ps = parse_filename(filename)
         fig, axs = plt.subplots(3, 1, sharex=True, facecolor="#404040", dpi=150)
@@ -120,6 +129,30 @@ class GreenieBoard(Plugin):
                 with suppress(Exception):
                     os.remove(filename)
             await conn.execute("DROP TABLE greenieboard")
+        elif new_version == '3.3':
+            def change_instance(instance: dict):
+                if 'ratings' in instance:
+                    ratings = instance.pop('ratings')
+                    grades = GRADES
+                    for key, value in grades.items():
+                        value['rating'] = ratings.get(key, 0)
+                    instance['grades'] = grades
+
+            config = os.path.join(self.node.config_dir, 'plugins', f'{self.plugin_name}.yaml')
+            data = yaml.load(Path(config).read_text(encoding='utf-8'))
+            if self.node.name in data.keys():
+                for name, node in data.items():
+                    if name == DEFAULT_TAG:
+                        change_instance(node)
+                        continue
+                    for instance in node.values():
+                        change_instance(instance)
+            else:
+                for instance in data.values():
+                    change_instance(instance)
+            with open(config, mode='w', encoding='utf-8') as outfile:
+                yaml.dump(data, outfile)
+            self.locals = self.read_locals()
 
     async def prune(self, conn: psycopg.AsyncConnection, *, days: int = -1, ucids: list[str] = None,
                     server: Optional[str] = None) -> None:
@@ -128,7 +161,9 @@ class GreenieBoard(Plugin):
             for ucid in ucids:
                 await conn.execute('DELETE FROM traps WHERE player_ucid = %s', (ucid,))
         elif days > -1:
-            await conn.execute("DELETE FROM traps WHERE time < (DATE(NOW()) - %s::interval)", (f'{days} days', ))
+            await conn.execute("""
+                DELETE FROM traps WHERE time < (DATE(NOW() AT TIME ZONE 'UTC') - %s::interval)
+            """,(f'{days} days', ))
         self.log.debug('Greenieboard pruned.')
 
     async def update_ucid(self, conn: psycopg.AsyncConnection, old_ucid: str, new_ucid: str) -> None:
@@ -157,7 +192,7 @@ class GreenieBoard(Plugin):
                 name = user.display_name
             else:
                 name = user
-        num_landings = max(self.get_config().get('num_landings', 25), 25)
+        num_landings = min(self.get_config().get('num_landings', 25), 25)
         async with self.apool.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute("""
@@ -188,14 +223,20 @@ class GreenieBoard(Plugin):
     @utils.app_has_role('DCS')
     @app_commands.guild_only()
     @app_commands.rename(num_rows='rows')
+    @app_commands.rename(num_landings='landings')
     @app_commands.autocomplete(squadron_id=utils.squadron_autocomplete)
     @app_commands.rename(squadron_id="squadron")
+    @app_commands.describe(landings_rtl=_("Draw landings right to left (default: True)"))
     async def board(self, interaction: discord.Interaction,
                     num_rows: Optional[Range[int, 5, 20]] = 10,
+                    num_landings: Optional[Range[int, 1, 30]] = 30,
+                    theme: Optional[Literal['light', 'dark']] = 'dark',
+                    landings_rtl: Optional[bool] = True,
                     squadron_id: Optional[int] = None):
         report = PaginationReport(interaction, self.plugin_name, 'greenieboard.json')
-        squadron = (await utils.get_squadron(self.bot, squadron_id=squadron_id)) if squadron_id else None
-        await report.render(server_name=None, num_rows=num_rows, squadron=squadron)
+        squadron = utils.get_squadron(self.node, squadron_id=squadron_id) if squadron_id else None
+        await report.render(server_name=None, num_rows=num_rows, num_landings=num_landings, theme=theme,
+                            landings_rtl=landings_rtl, squadron=squadron)
 
     @traps.command(description=_('Adds a trap to the Greenieboard'))
     @app_commands.guild_only()
@@ -204,23 +245,23 @@ class GreenieBoard(Plugin):
                   user: app_commands.Transform[Union[str, discord.Member], utils.UserTransformer]):
         ephemeral = utils.get_ephemeral(interaction)
         config = self.get_config()
-        if 'ratings' not in config:
+        if 'grades' not in config:
             # noinspection PyUnresolvedReferences
             await interaction.response.send_message(
-                _('You need to specify ratings in your greenieboard.yaml to use {}!').format(
+                _('You need to specify grades in your greenieboard.yaml to use {}!').format(
                     (await utils.get_command(self.bot, group='traps', name='add')).mention
                 ), ephemeral=True)
             return
 
         view = TrapView(self.bot, config, user)
         # noinspection PyUnresolvedReferences
-        await interaction.response.send_message(view=view)
+        await interaction.response.send_message(view=view, ephemeral=ephemeral)
         try:
             await view.wait()
             if view.success:
                 await interaction.followup.send(_('Trap added.'), ephemeral=ephemeral)
             else:
-                await interaction.followup.send(_('Aborted.'), ephemeral=ephemeral)
+                await interaction.followup.send(_('Aborted.'), ephemeral=True)
         finally:
             await interaction.delete_original_response()
 

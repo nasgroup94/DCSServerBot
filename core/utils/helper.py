@@ -6,7 +6,9 @@ import builtins
 import functools
 import hashlib
 import importlib
+import inspect
 import json
+import keyword
 import logging
 import luadata
 import os
@@ -24,8 +26,11 @@ import unicodedata
 import random
 import math
 
+from collections.abc import Mapping
+from copy import deepcopy
 from croniter import croniter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone, tzinfo
+from difflib import unified_diff
 from importlib import import_module
 from pathlib import Path
 from typing import Optional, Union, TYPE_CHECKING, Generator, Iterable, Callable, Any
@@ -67,16 +72,22 @@ __all__ = [
     "SettingsDict",
     "RemoteSettingsDict",
     "tree_delete",
+    "deep_merge",
     "hash_password",
+    "run_parallel_nofail",
     "evaluate",
     "for_each",
-    "YAMLError"
+    "YAMLError",
+    "DictWrapper",
+    "format_dict_pretty",
+    "show_dict_diff",
+    "to_valid_pyfunc_name"
 ]
 
 logger = logging.getLogger(__name__)
 
 
-def parse_time(time_str: str, tz: datetime.tzinfo = None) -> datetime:
+def parse_time(time_str: str, tz: tzinfo = None) -> datetime:
     fmt, time_str = ('%H:%M', time_str.replace('24:', '00:')) \
         if time_str.find(':') > -1 else ('%H', time_str.replace('24', '00'))
     ret = datetime.strptime(time_str, fmt)
@@ -85,7 +96,7 @@ def parse_time(time_str: str, tz: datetime.tzinfo = None) -> datetime:
     return ret
 
 
-def is_in_timeframe(time: datetime, timeframe: str, tz: datetime.tzinfo = None) -> bool:
+def is_in_timeframe(time: datetime, timeframe: str, tz: tzinfo = None) -> bool:
     """
     Check if a given time falls within a specified timeframe.
 
@@ -156,17 +167,29 @@ def format_string(string_: str, default_: Optional[str] = None, **kwargs) -> str
                 spec = ''
                 value = default_ or ''
             elif isinstance(value, list):
-                value = '\n'.join(value)
+                value = repr(value)
             elif isinstance(value, dict):
                 value = json.dumps(value)
             elif isinstance(value, bool):
                 value = str(value).lower()
+            elif isinstance(value, datetime) and value.tzinfo:
+                value = value.astimezone(timezone.utc).replace(tzinfo=None)
             return super().format_field(value, spec)
+
+        def get_value(self, key, args, kwargs):
+            if isinstance(key, int):
+                return args[key]
+            elif key in kwargs:
+                return kwargs[key]
+            else:
+                return "{" + key + "}"
 
     try:
         string_ = NoneFormatter().format(string_, **kwargs)
     except (KeyError, TypeError):
         string_ = ""
+    except IndexError as ex:
+        logger.exception(ex)
     return string_
 
 
@@ -370,11 +393,15 @@ def get_preset(node: Node, name: str, filename: Optional[str] = None) -> Optiona
     :param filename: The optional filename of the preset file to search in. If not provided, it will search for preset files in the 'config' directory.
     :return: The dictionary containing the preset data if found, or None if the preset was not found.
     """
-    def _read_presets_from_file(filename: Path, name: str) -> Optional[dict]:
-        all_presets = yaml.load(filename.read_text(encoding='utf-8'))
+    @cache_with_expiration(120)
+    def load_all_presets(filename: Path) -> dict:
+        return yaml.load(filename.read_text(encoding='utf-8'))
+
+    def _read_presets_from_file(filename: Path, name: str) -> Optional[Union[dict, list]]:
+        all_presets = load_all_presets(filename)
         preset = all_presets.get(name)
         if isinstance(preset, list):
-            return {k: v for d in preset for k, v in all_presets.get(d, {}).items()}
+            return [_read_presets_from_file(filename, x) for x in preset]
         return preset
 
     if filename:
@@ -452,12 +479,49 @@ def dynamic_import(package_name: str):
 def async_cache(func):
     cache = {}
 
+<<<<<<< HEAD
     @functools.wraps(func)
     async def wrapper(*args):
         if args in cache:
             return cache[args]
         result = await func(*args)
         cache[args] = result
+=======
+    def get_cache_key(*args, **kwargs):
+        signature = inspect.signature(func)
+        bound_args = signature.bind(*args, **kwargs)
+        bound_args.apply_defaults()
+
+        # Convert unhashable types to hashable forms
+        hashable_args = []
+        for k, v in bound_args.arguments.items():
+            if k not in ["interaction"]:  # Removed "self" from exclusion list
+                # For the self-parameter, use its id as part of the key
+                if k == "self":
+                    hashable_args.append(id(v))
+                # Convert lists to tuples, and handle nested lists
+                elif isinstance(v, list):
+                    hashable_args.append(tuple(tuple(x) if isinstance(x, list) else x for x in v))
+                else:
+                    hashable_args.append(v)
+
+        # Use tuple instead of frozenset to preserve order and handle nested structures
+        arg_tuple = tuple(hashable_args)
+        cache_key = (func.__name__, arg_tuple)
+        return cache_key
+
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        # Create a cache key from both args and kwargs
+        # We need to freeze kwargs into an immutable form to use as dict key
+        cache_key = get_cache_key(*args, **kwargs)
+
+        if cache_key in cache:
+            return cache[cache_key]
+
+        result = await func(*args, **kwargs)
+        cache[cache_key] = result
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         return result
 
     return wrapper
@@ -466,6 +530,10 @@ def async_cache(func):
 def cache_with_expiration(expiration: int):
     """
     Decorator to cache function results for a specific duration.
+<<<<<<< HEAD
+=======
+    Works with both sync and async functions.
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
     :param expiration: Cache duration in seconds.
     """
@@ -474,6 +542,7 @@ def cache_with_expiration(expiration: int):
         cache: dict[Any, Any] = {}
         cache_expiry: dict[Any, float] = {}
 
+<<<<<<< HEAD
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
             # Generate a key based on function arguments
@@ -487,11 +556,70 @@ def cache_with_expiration(expiration: int):
 
             # Call the original function and cache its result
             result = await func(*args, **kwargs)
+=======
+        def get_cache_key(*args, **kwargs):
+            signature = inspect.signature(func)
+            bound_args = signature.bind(*args, **kwargs)
+            bound_args.apply_defaults()
+
+            # Convert unhashable types to hashable forms
+            hashable_args = []
+            for k, v in bound_args.arguments.items():
+                # For the self-parameter, use its id as part of the key
+                if k == "self":
+                    hashable_args.append(id(v))
+                # Convert lists to tuples, and handle nested lists
+                elif isinstance(v, list):
+                    hashable_args.append(tuple(tuple(x) if isinstance(x, list) else x for x in v))
+                else:
+                    hashable_args.append(v)
+
+            # Use tuple instead of frozenset to preserve order and handle nested structures
+            arg_tuple = tuple(hashable_args)
+            cache_key = (func.__name__, arg_tuple)
+            return cache_key
+
+        def check_cache(cache_key):
+            if cache_key in cache and cache_key in cache_expiry:
+                if time.time() < cache_expiry[cache_key]:
+                    return cache[cache_key]
+            return None
+
+        def update_cache(cache_key, result):
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
             cache[cache_key] = result
             cache_expiry[cache_key] = time.time() + expiration
             return result
 
+<<<<<<< HEAD
         return wrapper
+=======
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            cache_key = get_cache_key(*args, **kwargs)
+
+            cached_result = check_cache(cache_key)
+            if cached_result is not None:
+                return cached_result
+
+            result = await func(*args, **kwargs)
+            return update_cache(cache_key, result)
+
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            cache_key = get_cache_key(*args, **kwargs)
+
+            cached_result = check_cache(cache_key)
+            if cached_result is not None:
+                return cached_result
+
+            result = func(*args, **kwargs)
+            return update_cache(cache_key, result)
+
+        if asyncio.iscoroutinefunction(func):
+            return async_wrapper
+        return sync_wrapper
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
     return decorator
 
@@ -591,6 +719,7 @@ class SettingsDict(dict):
     def write_file(self):
         # DO NOT write empty config files. This means in general that there is an error.
         if not len(self):
+            self.log.error("- Writing of {} aborted due to empty set.".format(os.path.basename(self.path)))
             return
         tmpfd, tmpname = tempfile.mkstemp()
         os.close(tmpfd)
@@ -643,19 +772,31 @@ class SettingsDict(dict):
             }
         }
         if self.bus:
+<<<<<<< HEAD
             asyncio.create_task(self.bus.send_to_node(msg))
 
     def __setitem__(self, key, value):
+=======
+            self.bus.loop.create_task(self.bus.send_to_node(msg))
+
+    def __setitem__(self, key, value, *, sync: bool = False):
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         if os.path.exists(self.path) and self.mtime < os.path.getmtime(self.path):
             self.log.debug(f'{self.path} changed, re-reading from disk.')
             self.read_file()
         super().__setitem__(key, value)
+<<<<<<< HEAD
         if len(self):
             self.write_file()
             if not self.obj.node.master:
                 self.update_master(key, value, method='__setitem__')
         else:
             self.log.error("- Writing of {} aborted due to empty set.".format(os.path.basename(self.path)))
+=======
+        self.write_file()
+        if not self.obj.node.master:
+            self.update_master(key, value, method='__setitem__')
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
     def __getitem__(self, item):
         if os.path.exists(self.path) and self.mtime < os.path.getmtime(self.path):
@@ -663,17 +804,20 @@ class SettingsDict(dict):
             self.read_file()
         return super().__getitem__(item)
 
-    def __delitem__(self, key):
+    def __delitem__(self, key, *, sync: bool = False):
         if os.path.exists(self.path) and self.mtime < os.path.getmtime(self.path):
             self.log.debug(f'{self.path} changed, re-reading from disk.')
             self.read_file()
-        super().__delitem__(key)
-        if len(self):
+        if self.get(key) is not None:
+            super().__delitem__(key)
             self.write_file()
             if not self.obj.node.master:
                 self.update_master(key, method='__delitem__')
+<<<<<<< HEAD
         else:
             self.log.error("- Writing of {} aborted due to empty set.".format(os.path.basename(self.path)))
+=======
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
     def get(self, key, default=None):
         try:
@@ -731,7 +875,11 @@ class RemoteSettingsDict(dict):
                     "value": value
                 }
             }
+<<<<<<< HEAD
             asyncio.create_task(self.bus.send_to_node(msg, node=self.server.node))
+=======
+            self.bus.loop.create_task(self.bus.send_to_node(msg, node=self.server.node))
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
     def __delitem__(self, key, *, sync: bool = True):
         super().__delitem__(key)
@@ -745,7 +893,11 @@ class RemoteSettingsDict(dict):
                     "key": key
                 }
             }
+<<<<<<< HEAD
             asyncio.create_task(self.bus.send_to_node(msg, node=self.server.node))
+=======
+            self.bus.loop.create_task(self.bus.send_to_node(msg, node=self.server.node))
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
 
 def tree_delete(d: dict, key: str, debug: Optional[bool] = False):
@@ -779,11 +931,23 @@ def tree_delete(d: dict, key: str, debug: Optional[bool] = False):
         curr_element.pop(int(keys[-1]))
 
 
+def deep_merge(dict1, dict2):
+    result = dict(dict1)  # Create a shallow copy of dict1
+    for key, value in dict2.items():
+        if key in result and isinstance(result[key], Mapping) and isinstance(value, Mapping):
+            # Recursively merge dictionaries
+            result[key] = deep_merge(result[key], value)
+        else:
+            # Overwrite or add the new key-value pair
+            result[key] = value
+    return result
+
+
 def hash_password(password: str) -> str:
     # Generate an 11 character alphanumeric string
     key = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(11))
 
-    # Create a 32 byte digest using the Blake2b hash algorithm
+    # Create a 32-byte-digest using the "Blake2b" hash algorithm
     # with the password as the input and the key as the key
     password_bytes = password.encode('utf-8')
     key_bytes = key.encode('utf-8')
@@ -796,6 +960,11 @@ def hash_password(password: str) -> str:
     hashed_password = key + ':' + encoded_digest
 
     return hashed_password
+
+
+async def run_parallel_nofail(*tasks):
+    """Run tasks in parallel, ignoring any failures."""
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def evaluate(value: Union[str, int, float, bool, list, dict], **kwargs) -> Union[str, int, float, bool, list, dict]:
@@ -812,19 +981,23 @@ def evaluate(value: Union[str, int, float, bool, list, dict], **kwargs) -> Union
             return value
         value = format_string(value[1:], **kwargs)
         namespace = {k: v for k, v in globals().items() if not k.startswith("__")}
-        return eval(value, namespace, kwargs) if value else False
+        try:
+            return eval(value, namespace, kwargs) if value else False
+        except Exception:
+            logger.error(f"Error evaluating: {value} using kwargs={repr(kwargs)}")
+            raise
 
     if isinstance(value, list):
         for i in range(len(value)):
-            value[i] = _evaluate(value[i], **kwargs)
+            value[i] = evaluate(value[i], **kwargs)
     elif isinstance(value, dict):
-        return {_evaluate(k, **kwargs): _evaluate(v, **kwargs) for k, v in value.items()}
+        return {_evaluate(k, **kwargs): evaluate(v, **kwargs) for k, v in value.items()}
     else:
         return _evaluate(value, **kwargs)
 
 
 def for_each(data: dict, search: list[str], depth: Optional[int] = 0, *,
-             debug: Optional[bool] = False, **kwargs) -> Generator[dict]:
+             debug: Optional[bool] = False, **kwargs) -> Generator[Optional[dict]]:
     """
     :param data: The data to iterate over.
     :param search: The search pattern to match elements in the data.
@@ -844,15 +1017,15 @@ def for_each(data: dict, search: list[str], depth: Optional[int] = 0, *,
     If the search pattern is fully matched or the data is empty, the method will yield the data itself. If debug is set to True, debug information will be printed during the search process
     *.
     """
-    def process_iteration(_next, data, search, depth, debug):
+    def process_iteration(_next, data, search, depth, debug, **kwargs):
         if isinstance(data, list):
             for value in data:
-                yield from for_each(value, search, depth + 1, debug=debug)
+                yield from for_each(value, search, depth + 1, debug=debug, **kwargs)
         elif isinstance(data, dict):
             for value in data.values():
-                yield from for_each(value, search, depth + 1, debug=debug)
+                yield from for_each(value, search, depth + 1, debug=debug, **kwargs)
 
-    def process_indexing(_next, data, search, depth, debug):
+    def process_indexing(_next, data, search, depth, debug, **kwargs):
         if isinstance(data, list):
             indexes = [int(x.strip()) for x in _next[1:-1].split(',')]
             for index in indexes:
@@ -862,7 +1035,7 @@ def for_each(data: dict, search: list[str], depth: Optional[int] = 0, *,
                     yield None
                 if debug:
                     logger.debug("  " * depth + f"|_ Selecting {index}. element")
-                yield from for_each(data[index - 1], search, depth + 1, debug=debug)
+                yield from for_each(data[index - 1], search, depth + 1, debug=debug, **kwargs)
         elif isinstance(data, dict):
             indexes = [x.strip() for x in _next[1:-1].split(',')]
             for index in indexes:
@@ -872,7 +1045,7 @@ def for_each(data: dict, search: list[str], depth: Optional[int] = 0, *,
                     yield None
                 if debug:
                     logger.debug("  " * depth + f"|_ Selecting element {index}")
-                yield from for_each(data[index], search, depth + 1, debug=debug)
+                yield from for_each(data[index], search, depth + 1, debug=debug, **kwargs)
 
     def process_pattern(_next, data, search, depth, debug, **kwargs):
         if isinstance(data, list):
@@ -880,33 +1053,44 @@ def for_each(data: dict, search: list[str], depth: Optional[int] = 0, *,
                 if evaluate(_next, **(kwargs | value)):
                     if debug:
                         logger.debug("  " * depth + f"  - Element {idx + 1} matches.")
-                    yield from for_each(value, search, depth + 1, debug=debug)
-        else:
-            if evaluate(_next, **(kwargs | data)):
+                    yield from for_each(value, search, depth + 1, debug=debug, **kwargs)
+        elif isinstance(data, dict):
+            if any(x for x in data.keys() if isinstance(x, int)):
+                for idx, value in data.items():
+                    if evaluate(_next, **(kwargs | value)):
+                        if debug:
+                            logger.debug("  " * depth + f"  - Element {idx} matches.")
+                        yield from for_each(value, search, depth + 1, debug=debug, **kwargs)
+            elif evaluate(_next, **(kwargs | data)):
                 if debug:
-                    logger.debug("  " * depth + "  - Element matches.")
-                yield from for_each(data, search, depth + 1, debug=debug)
+                    logger.debug("  " * depth + f"  - Element {format_string(_next[1:], **kwargs)} matches.")
+                yield from for_each(data, search, depth + 1, debug=debug, **kwargs)
 
     if not data or len(search) == depth:
-        if debug:
-            logger.debug("  " * depth + ("|_ RESULT found => Processing ..." if len(search) == depth else "|_ NO result found, skipping."))
-        yield data if len(search) == depth else None
+        if len(search) == depth:
+            if debug:
+                logger.debug("  " * depth + "|_ RESULT found => Processing ...")
+            yield data
+        else:
+            logger.debug("  " * depth +  "|_ NO result found, skipping.")
+            yield None
     else:
         _next = search[depth]
         if _next == '*':
             if debug:
                 logger.debug("  " * depth + f"|_ Iterating over {len(data)} {search[depth - 1]} elements")
-            yield from process_iteration(_next, data, search, depth, debug)
+            yield from process_iteration(_next, data, search, depth, debug, **kwargs)
         elif _next.startswith('['):
-            yield from process_indexing(_next, data, search, depth, debug)
+            yield from process_indexing(_next, data, search, depth, debug, **kwargs)
         elif _next.startswith('$'):
             if debug:
-                logger.debug("  " * depth + f"|_ Searching pattern {_next} on {len(data)} {search[depth - 1]} elements")
+                pattern = format_string(_next[1:], **kwargs)
+                logger.debug("  " * depth + f"|_ Searching pattern {pattern} on {len(data)} {search[depth - 1]} elements")
             yield from process_pattern(_next, data, search, depth, debug, **kwargs)
         elif _next in data:
             if debug:
                 logger.debug("  " * depth + f"|_ {_next} found.")
-            yield from for_each(data.get(_next), search, depth + 1, debug=debug)
+            yield from for_each(data.get(_next), search, depth + 1, debug=debug, **kwargs)
         else:
             if debug:
                 logger.debug("  " * depth + f"|_ {_next} not found.")
@@ -923,3 +1107,154 @@ class YAMLError(Exception):
     """
     def __init__(self, file: str, ex: Union[MarkedYAMLError, ValueError, SchemaError]):
         super().__init__(f"Error in {file}, " + ex.__str__().replace('"<unicode string>"', file))
+
+
+class DictWrapper:
+    """A wrapper for dictionaries enabling both attribute and key-based access."""
+
+    def __init__(self, data):
+        """Initialize with a dictionary or a list."""
+        if isinstance(data, dict):
+            self._data = {k: self._wrap(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            self._data = [self._wrap(v) for v in data]
+        else:
+            self._data = data  # Handle non-dict types (e.g., primitive values)
+
+    @staticmethod
+    def _wrap(value):
+        """Wrap nested dictionaries or lists inside DictWrapper."""
+        if isinstance(value, dict):
+            return DictWrapper(value)
+        elif isinstance(value, list):
+            return [DictWrapper._wrap(v) for v in value]
+        return value
+
+    def __getattr__(self, name):
+        """Access dictionary keys as attributes."""
+        try:
+            return self._data[name]
+        except KeyError:
+            raise AttributeError(f"Attribute '{name}' not found")
+
+    def __setattr__(self, name, value):
+        """Set dictionary keys as attributes."""
+        if name == "_data":
+            super().__setattr__(name, value)
+        else:
+            self._data[name] = self._wrap(value)
+
+    def __delattr__(self, name):
+        """Delete keys like attributes."""
+        try:
+            del self._data[name]
+        except KeyError:
+            raise AttributeError(f"Attribute '{name}' not found")
+
+    def __getitem__(self, key):
+        """Support list-style or dictionary-style key/item access."""
+        return self._data[key]
+
+    def __setitem__(self, key, value):
+        """Set items using key."""
+        self._data[key] = self._wrap(value)
+
+    def __delitem__(self, key):
+        """Support item deletion."""
+        del self._data[key]
+
+    def __iter__(self):
+        """Allow iteration."""
+        return iter(self._data)
+
+    def __repr__(self):
+        """Pretty representation."""
+        return repr(self._data)
+
+    def to_dict(self):
+        def _unwrap_list(value):
+            if isinstance(value, list):
+                return [(v.to_dict() if isinstance(v, DictWrapper) else _unwrap_list(v)) for v in value]
+            return value
+
+        if isinstance(self._data, dict):
+            return {
+                k: (v.to_dict() if isinstance(v, DictWrapper) else _unwrap_list(v)) for k, v in self._data.items()
+            }
+        elif isinstance(self._data, list):
+            return _unwrap_list(self._data)
+        return self._data
+
+    def clone(self):
+        """Deeply clone the DictWrapper object."""
+        return DictWrapper(deepcopy(self.to_dict()))
+
+
+def format_dict_pretty(d: dict) -> str:
+    """Convert dictionary to pretty-printed JSON string with indentation."""
+
+    def default_serializer(obj):
+        return str(obj)
+
+    # Convert to string keys and sort manually
+    items = sorted(d.items(), key=lambda x: str(x[0]))
+    sorted_dict = dict(items)
+
+    return json.dumps(sorted_dict, indent=4, sort_keys=False, default=default_serializer)
+
+
+def show_dict_diff(old_dict: dict[str, Any], new_dict: dict[str, Any], context_lines: int = 3) -> str:
+    """
+    Generate a Discord-friendly diff between two dictionaries with context lines.
+
+    Args:
+        old_dict: Original dictionary
+        new_dict: Modified dictionary
+        context_lines: Number of context lines to show before and after changes
+
+    Returns:
+        String formatted for Discord with diff syntax highlighting
+    """
+    # Convert both dictionaries to a pretty-printed format
+    old_str = format_dict_pretty(old_dict).splitlines()
+    new_str = format_dict_pretty(new_dict).splitlines()
+
+    # Generate a unified diff with specified context
+    diff = list(unified_diff(old_str, new_str, lineterm='', n=context_lines))
+
+    # Build the formatted string for Discord
+    result = ["```diff"]
+    for line in diff:
+        # Skip the header lines that show file names
+        if line.startswith('---') or line.startswith('+++'):
+            continue
+        result.append(line)
+    result.append("```")
+
+    return '\n'.join(result)
+
+
+def to_valid_pyfunc_name(raw_name: str) -> str:
+    """
+    Convert an arbitrary name (e.g. 'test-1') into a legal Python identifier.
+
+    Rules applied (in order):
+
+    1. Replace every character that is **not** `[A-Za-z0-9_]` with an underscore.
+    2. If the resulting string starts with a digit, prepend an underscore.
+    3. If the result is a Python keyword (`def`, `class`, …), prefix it with an underscore as well.
+
+    The function returns the sanitized name; the original name is kept unchanged.
+    """
+    # 1️⃣  Replace everything that is not a word character
+    cleaned = re.sub(r'\W', '_', raw_name)
+
+    # 2️⃣  If it starts with a digit, add a leading underscore
+    if re.match(r'^\d', cleaned):
+        cleaned = '_' + cleaned
+
+    # 3️⃣  Avoid Python keywords
+    if keyword.iskeyword(cleaned):
+        cleaned = '_' + cleaned
+
+    return cleaned

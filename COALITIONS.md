@@ -5,7 +5,7 @@ about it. It has redundant information in it, which is usually a bad idea, but I
 guys to have everything in one place.<br/>
 Coalitions are implemented by slot blocking, but can use the feature of coalition passwords in DCS, too.
 
-> ⚠️ **Attention!**</BR>
+> [!NOTE]
 > With COALITIONS enabled, some persistent displays will not appear in your server status channels (or will be changed)
 > like Player information or Mission Statistics, which would render all the work useless, if you could peek in there and 
 > see what is going on. You can still use the commands like `/player list` or `/missionstats` in your dedicated coalition 
@@ -51,10 +51,12 @@ My Fancy Server:
   # [...]
   channels:
     status: 1122334455667788
-    chat: 8765432187654321      # general chat channel
+    chat: 8765432187654321          # general chat channel
     admin: 8877665544332211
-    blue: 1188227733664455      # chat channel for coalition blue
-    red: 8811772266335544       # chat channel for coalition red
+    blue: 1188227733664455          # chat channel for coalition blue
+    blue_events: 987651234987651234 # Optional: to separate in-game event from chat messages (default: take blue instead).
+    red: 8811772266335544           # chat channel for coalition red
+    red_events: 123459876123459876  # Optional: same as blue_events for red.
   # [...]
   coalitions:
     lock_time: 1 day            # time in which you are not allowed to move to the opposite coalition after leaving one coalition
@@ -62,7 +64,7 @@ My Fancy Server:
     blue_role: 1234123412341234 # Discord role for the blue coalition
     red_role: 43214321432143210 # Discord role for the red coalition
 ```
-> ⚠️ **Attention!**<br/>
+> [!IMPORTANT]
 > Make sure, that all channels for red and blue coalitions have read access **only** for this coalition and not for 
 > @everyone or the other coalition! The CHAT-channels for red and blue are similar to the general chat channel, 
 > but they only replicate chat messages that are being sent to that specific coalition in game.

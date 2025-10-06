@@ -4,8 +4,12 @@ import os
 import psycopg
 from psycopg.rows import dict_row
 
+<<<<<<< HEAD
 from core import (Plugin, utils, Report, Status, Server, Coalition, Channel, command, Group, Player, get_translation,
                   PlayerType)
+=======
+from core import Plugin, utils, Report, Status, Server, Coalition, Channel, command, Group, get_translation, PlayerType
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 from discord import app_commands
 from discord.app_commands import Range
 from discord.ext import commands
@@ -37,6 +41,7 @@ async def scriptfile_autocomplete(interaction: discord.Interaction, current: str
         return choices[:25]
     except Exception as ex:
         interaction.client.log.exception(ex)
+        return []
 
 
 async def recipient_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[int]]:
@@ -48,7 +53,7 @@ async def recipient_autocomplete(interaction: discord.Interaction, current: str)
                 SELECT DISTINCT p.name, p.ucid 
                 FROM players p, messages m
                 WHERE p.ucid = m.player_ucid
-                 AND (name ILIKE %s OR ucid ILIKE %s)
+                AND (name ILIKE %s OR ucid ILIKE %s)
             """, ('%' + current + '%', '%' + current + '%'))
             choices: list[app_commands.Choice[int]] = [
                 app_commands.Choice(name=f"{row[0]} (ucid={row[1]})", value=row[1])
@@ -57,6 +62,7 @@ async def recipient_autocomplete(interaction: discord.Interaction, current: str)
             return choices[:25]
     except Exception as ex:
         interaction.client.log.exception(ex)
+        return []
 
 
 async def campaign_servers_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
@@ -78,9 +84,16 @@ async def campaign_servers_autocomplete(interaction: discord.Interaction, curren
             return choices[:25]
     except Exception as ex:
         interaction.client.log.exception(ex)
+<<<<<<< HEAD
 
 
 class GameMaster(Plugin):
+=======
+        return []
+
+
+class GameMaster(Plugin[GameMasterEventListener]):
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
     async def install(self) -> bool:
         init = await super().install()
@@ -158,7 +171,7 @@ class GameMaster(Plugin):
             if server.status != Status.RUNNING:
                 await interaction.followup.send(_('Message NOT sent to server {server} because it is {status}.'
                                                   ).format(server=server.display_name, status=server.status.name),
-                                                ephemeral=ephemeral)
+                                                ephemeral=True)
                 continue
             await server.sendPopupMessage(Coalition(to), message, time, interaction.user.display_name)
             await interaction.followup.send(_('Message sent to server {}.').format(server.display_name),
@@ -304,17 +317,45 @@ class GameMaster(Plugin):
         # noinspection PyUnresolvedReferences
         await interaction.response.send_message(embed=env.embed, ephemeral=utils.get_ephemeral(interaction))
 
+    @campaign.command(description=_("Edit Campaign"))
+    @app_commands.guild_only()
+    @utils.app_has_role('DCS Admin')
+    @app_commands.autocomplete(campaign=utils.campaign_autocomplete)
+    async def edit(self, interaction: discord.Interaction, campaign: str):
+        ephemeral = utils.get_ephemeral(interaction)
+        async with self.apool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute("""
+                    SELECT * FROM campaigns WHERE name = %s
+                """, (campaign, ))
+                row = await cursor.fetchone()
+                if not row:
+                    # noinspection PyUnresolvedReferences
+                    await interaction.response.send_message(_('Campaign not found.'), ephemeral=True)
+                    return
+                modal = CampaignModal(name=campaign, start=row['start'], end=row['stop'], description=row['description'],
+                                      image_url=row['image_url'])
+                # noinspection PyUnresolvedReferences
+                await interaction.response.send_modal(modal)
+                if await modal.wait():
+                    return
+                async with conn.transaction():
+                    await conn.execute("""
+                        UPDATE campaigns SET start=%s, stop=%s, description=%s, image_url=%s 
+                        WHERE name=%s
+                    """, (modal.start, modal.end, modal.description.value, modal.image_url.value, campaign))
+                await interaction.followup.send(_('Campaign {} updated.').format(campaign),
+                                                        ephemeral=ephemeral)
+
     @campaign.command(description=_("Add a campaign"))
     @app_commands.guild_only()
     @utils.app_has_role('DCS Admin')
     async def add(self, interaction: discord.Interaction):
         ephemeral = utils.get_ephemeral(interaction)
-        modal = CampaignModal(self.eventlistener)
+        modal = CampaignModal()
         # noinspection PyUnresolvedReferences
         await interaction.response.send_modal(modal)
         if await modal.wait():
-            # noinspection PyUnresolvedReferences
-            await interaction.response.send_message(_('Aborted.'), ephemeral=ephemeral)
             return
         try:
             servers = await utils.server_selection(self.bus, interaction,
@@ -326,8 +367,15 @@ class GameMaster(Plugin):
             if not isinstance(servers, list):
                 servers = [servers]
             try:
-                await self.eventlistener.campaign('add', servers=servers, name=modal.name.value,
-                                                  description=modal.description.value, start=modal.start, end=modal.end)
+                await self.eventlistener.campaign(
+                    'add',
+                    servers=servers,
+                    name=modal.name.value,
+                    description=modal.description.value,
+                    image_url=modal.image_url.value,
+                    start=modal.start,
+                    end=modal.end
+                )
                 await interaction.followup.send(_("Campaign {} added.").format(modal.name.value), ephemeral=ephemeral)
             except psycopg.errors.ExclusionViolation:
                 await interaction.followup.send(_("A campaign is already configured for this timeframe!"),
@@ -487,6 +535,7 @@ class GameMaster(Plugin):
             await msg.delete()
 
     @commands.Cog.listener()
+<<<<<<< HEAD
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         # did a member change their roles?
         if before.roles == after.roles:
@@ -501,6 +550,8 @@ class GameMaster(Plugin):
                 })
 
     @commands.Cog.listener()
+=======
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
     async def on_message(self, message: discord.Message):
         pattern = ['.lua', '.json']
 
@@ -531,7 +582,7 @@ class GameMaster(Plugin):
                         # await server.sendChatMessage(Coalition.RED, message.content, message.author.display_name)
                         pass
                 if server.channels[Channel.CHAT] and server.channels[Channel.CHAT] == message.channel.id:
-                    if message.content.startswith('/') is False:
+                    if not message.content.startswith('/'):
                         await server.sendChatMessage(Coalition.ALL, message.content, message.author.display_name)
 
     @commands.Cog.listener()
@@ -545,7 +596,7 @@ class GameMaster(Plugin):
                 AND c.coalition_leave IS NULL
             """, (member.id, )):
                 server = self.bot.get_server(row[0])
-                if not server:
+                if not server or 'coalitions' not in server.locals:
                     return
                 roles = {
                     'red': self.bot.get_role(server.locals['coalitions']['red_role']),

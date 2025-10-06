@@ -19,6 +19,7 @@ DEFAULT:
   popup: Now playing {song} on {frequency}{modulation}  # optional - popup message when a song starts to play
   chat: Now playing {song} on {frequency}{modulation}   # optional - chat message when a song starts to play
   pause_without_players: false    # Pause music, when no player is active (default: true)
+  debug: true                     # Put the output of DCS-SR-ExternalAudio.exe to the dcssb*.log
   radios:
     Radio 1:                      # Name of the radio, can be anything
       type: SRSRadio              # we currently only support SRS, so this has to be in
@@ -39,6 +40,6 @@ DEFAULT:
 ```
 You define unlimited radios per server, too.
 
-> ⚠️ **Attention!**<br>
+> [!NOTE]
 > Please keep in mind that every radio runs a dedicated process on your server. If you run a lot of radios, that can<br>
 > result in additional load, especially when a new song is decoded before playing.

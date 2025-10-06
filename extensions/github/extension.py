@@ -51,7 +51,12 @@ class GitHub(Extension):
         with open(sparse_checkout_path, 'w') as f:
             f.write(pattern + '\n')
 
+<<<<<<< HEAD
         subprocess.run(['git', 'pull', '--set-upstream', 'origin', self.get_default_branch(self.target)],
+=======
+        branch = self.config.get('branch', self.get_default_branch(self.target))
+        subprocess.run(['git', 'pull', '--set-upstream', 'origin', branch],
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                        cwd=self.target, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     async def update(self):

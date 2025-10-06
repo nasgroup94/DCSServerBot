@@ -2,10 +2,19 @@ import aiohttp
 import asyncio
 
 from core import EventListener, Server, Player, Side, event
+from datetime import datetime, timezone
 from psycopg.rows import dict_row
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .commands import Cloud
 
 
-class CloudListener(EventListener):
+class CloudListener(EventListener["Cloud"]):
+
+    def __init__(self, plugin: "Cloud"):
+        super().__init__(plugin)
+        self.updates: dict[str, datetime] = {}
 
     async def update_cloud_data(self, server: Server, player: Player):
         if not server.current_mission:
@@ -30,13 +39,11 @@ class CloudListener(EventListener):
                 """, (player.ucid, server.current_mission.map, player.unit_type))
                 row = await cursor.fetchone()
         if row:
-            # noinspection PyUnresolvedReferences
             row['client'] = self.plugin.client
             try:
-                # noinspection PyUnresolvedReferences
                 await self.plugin.post('upload', row)
             except aiohttp.ClientError:
-                self.log.warn('Cloud service not available atm, skipping statistics upload.')
+                self.log.warning('Cloud service not available atm, skipping statistics upload.')
 
     @event(name="onPlayerChangeSlot")
     async def onPlayerChangeSlot(self, server: Server, data: dict) -> None:
@@ -50,5 +57,28 @@ class CloudListener(EventListener):
             return
         if player.side == Side.SPECTATOR:
             return
-        # noinspection PyAsyncCall
         asyncio.create_task(self.update_cloud_data(server, player))
+
+    @event(name="onPlayerStart")
+    async def onPlayerStart(self, server: Server, data: dict) -> None:
+        if data['id'] != 1:
+            await server.run_on_extension(extension='Cloud', method='cloud_register')
+            self.updates[server.name] = datetime.now(tz=timezone.utc)
+
+    @event(name="onPlayerStop")
+    async def onPlayerStop(self, server: Server, data: dict) -> None:
+        if data['id'] != 1:
+            await server.run_on_extension(extension='Cloud', method='cloud_register')
+            self.updates[server.name] = datetime.now(tz=timezone.utc)
+
+    @event(name="getMissionUpdate")
+    async def getMissionUpdate(self, server: Server, _: dict) -> None:
+        if not self.updates.get(server.name):
+            self.updates[server.name] = datetime.now(tz=timezone.utc)
+        if (datetime.now(tz=timezone.utc) - self.updates[server.name]).total_seconds() > 240:
+            try:
+                await server.run_on_extension(extension='Cloud', method='cloud_register')
+            except ValueError:
+                self.log.debug("Cloud extension disabled, no cloud registration sent.")
+                pass
+            self.updates[server.name] = datetime.now(tz=timezone.utc)

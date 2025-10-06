@@ -3,8 +3,8 @@ import discord
 import psycopg
 
 from contextlib import suppress
-from core import Plugin, PluginRequiredError, TEventListener, utils, Player, Server, PluginInstallationError, \
-    command, DEFAULT_TAG, Report, get_translation
+from core import (Plugin, PluginRequiredError, utils, Player, Server, PluginInstallationError, command, DEFAULT_TAG,
+                  Report, get_translation)
 from discord import app_commands
 from discord.app_commands import Range
 from discord.ext import tasks
@@ -18,8 +18,8 @@ from ..creditsystem.player import CreditPlayer
 _ = get_translation(__name__.split('.')[1])
 
 
-class Punishment(Plugin):
-    def __init__(self, bot: DCSServerBot, eventlistener: Type[TEventListener] = None):
+class Punishment(Plugin[PunishmentEventListener]):
+    def __init__(self, bot: DCSServerBot, eventlistener: Type[PunishmentEventListener] = None):
         super().__init__(bot, eventlistener)
         if not self.locals:
             raise PluginInstallationError(reason=f"No {self.plugin_name}.yaml file found!", plugin=self.plugin_name)
@@ -45,10 +45,12 @@ class Punishment(Plugin):
         await conn.execute("UPDATE pu_events SET target_id = %s WHERE target_id = %s", (new_ucid, old_ucid))
 
     async def punish(self, server: Server, ucid: str, punishment: dict, reason: str, points: Optional[float] = None):
-        player: Player = server.get_player(ucid=ucid, active=True)
+        player: Player = server.get_player(ucid=ucid)
         member = self.bot.get_member_by_ucid(ucid)
         admin_channel = self.bot.get_admin_channel(server)
         if punishment['action'] == 'ban':
+            # we must not punish for reslots here
+            self.eventlistener.pending_kill.pop(ucid, None)
             await self.bus.ban(ucid, self.plugin_name, reason, punishment.get('days', 3))
             if member:
                 message = _("Member {member} banned by {banned_by} for {reason}.").format(
@@ -83,6 +85,8 @@ class Punishment(Plugin):
             return
 
         if punishment['action'] == 'kick' and player.active:
+            # we must not punish for reslots here
+            self.eventlistener.pending_kill.pop(ucid, None)
             await server.kick(player, reason)
             if admin_channel:
                 await admin_channel.send(
@@ -90,6 +94,8 @@ class Punishment(Plugin):
                         player=player.display_name, ucid=player.ucid, kicked_by=self.bot.member.name, reason=reason))
 
         elif punishment['action'] == 'move_to_spec':
+            # we must not punish for reslots here
+            self.eventlistener.pending_kill.pop(ucid, None)
             await server.move_to_spectators(player)
             await player.sendUserMessage(_("You've been kicked back to spectators because of: {}.").format(reason))
             if admin_channel:
@@ -134,10 +140,18 @@ class Punishment(Plugin):
                             # we are not initialized correctly yet
                             if not config:
                                 continue
+<<<<<<< HEAD
                             async for row in await cursor.execute(f"""
                                 SELECT * FROM pu_events_sdw 
                                 WHERE server_name = %s
                             """, (server_name,)):
+=======
+                            await cursor.execute("""
+                                SELECT * FROM pu_events_sdw WHERE server_name = %s
+                            """, (server_name,))
+                            rows = await cursor.fetchall()
+                            for row in rows:
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                                 try:
                                     for punishment in config.get('punishments', {}):
                                         if row['points'] < punishment['points']:
@@ -207,10 +221,16 @@ class Punishment(Plugin):
                     VALUES (%s, %s, %s, %s) 
                 """, (ucid, server.name, reason, points))
 
+        if points >= 0:
+            message = _('User punished with {} points.').format(points)
+        else:
+            message = _('The users punishment points have been reduced by {} points.').format(abs(points))
         # noinspection PyUnresolvedReferences
-        await interaction.response.send_message(_('User punished with {} points.').format(points), ephemeral=ephemeral)
-        await self.bot.audit(_("punished user {ucid} with {points} points.").format(ucid=ucid, points=points),
-                             user=interaction.user)
+        await interaction.response.send_message(message, ephemeral=ephemeral)
+        await self.bot.audit(
+            _("changed punishment points of user {ucid} by {points} points.").format(ucid=ucid, points=points),
+            user=interaction.user
+        )
 
     @command(description=_('Deletes a users punishment points'))
     @app_commands.guild_only()
@@ -235,12 +255,7 @@ class Punishment(Plugin):
                     for ucid in ucids:
                         await conn.execute('DELETE FROM pu_events WHERE init_id = %s', (ucid, ))
                         await conn.execute('DELETE FROM pu_events_sdw WHERE init_id = %s', (ucid, ))
-                        await conn.execute("DELETE FROM bans WHERE ucid = %s", (ucid, ))
-                        for server_name, server in self.bot.servers.items():
-                            await server.send_to_dcs({
-                                "command": "unban",
-                                "ucid": ucid
-                            })
+                        await self.bus.unban(ucid)
 
             await interaction.followup.send(
                 _("All punishment points deleted and player unbanned (if they were banned by the bot before)."),

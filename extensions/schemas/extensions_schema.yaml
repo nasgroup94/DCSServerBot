@@ -10,6 +10,8 @@ schema;node_extensions_schema:
       include: 'node_olympus_schema'
     RealWeather:
       include: 'node_realweather_schema'
+    SkyEye:
+      include: 'node_skyeye_schema'
     Sneaker:
       include: 'node_sneaker_schema'
     SRS:
@@ -22,6 +24,8 @@ schema;instance_extensions_schema:
   mapping:
     DSMC:
       include: 'dsmc_schema'
+    GitHub:
+      include: 'github_schema'
     gRPC:
       include: 'grpc_schema'
     GitHub:
@@ -34,14 +38,21 @@ schema;instance_extensions_schema:
       include: 'instance_lotatc_schema'
     MizEdit:
       include: 'mizedit_schema'
+    ModManager:
+      include: 'modmanager_schema'
     Olympus:
       include: 'instance_olympus_schema'
+<<<<<<< HEAD
     OvGME:
       include: 'instance_ovgme_schema'
+=======
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
     Pretense:
       include: 'pretense_schema'
     RealWeather:
       include: 'instance_realweather_schema'
+    SkyEye:
+      include: 'instance_skyeye_schema'
     Sneaker:
       include: 'instance_sneaker_schema'
     SRS:

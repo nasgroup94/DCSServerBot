@@ -1,9 +1,7 @@
-import discord
 import os
 import psycopg
 
-from core import Plugin, PluginRequiredError, Server, Player, TEventListener, PluginInstallationError, DEFAULT_TAG
-from discord.ext import commands
+from core import Plugin, PluginRequiredError, Server, PluginInstallationError, DEFAULT_TAG
 from pathlib import Path
 from services.bot import DCSServerBot
 from typing import Optional, Type
@@ -15,10 +13,10 @@ from ruamel.yaml import YAML
 yaml = YAML()
 
 
-class SlotBlocking(Plugin):
+class SlotBlocking(Plugin[SlotBlockingListener]):
 
-    def __init__(self, bot: DCSServerBot, eventlistener: Type[TEventListener] = None):
-        super().__init__(bot, eventlistener=eventlistener)
+    def __init__(self, bot: DCSServerBot, eventlistener: Type[SlotBlockingListener] = None):
+        super().__init__(bot, eventlistener)
         if not self.locals:
             raise PluginInstallationError(reason=f"No {self.plugin_name}.yaml file found!", plugin=self.plugin_name)
 
@@ -66,6 +64,7 @@ class SlotBlocking(Plugin):
                 server_data[DEFAULT_TAG].pop('message_server_full', None)
             with open(server_config, mode='w', encoding='utf-8') as outfile:
                 yaml.dump(server_data, outfile)
+        self.locals = self.read_locals()
 
     def get_config(self, server: Optional[Server] = None, *, plugin_name: Optional[str] = None,
                    use_cache: Optional[bool] = True) -> dict:
@@ -82,31 +81,6 @@ class SlotBlocking(Plugin):
             if vips:
                 self._config[server.node.name][server.instance.name]['VIP'] = vips
         return self._config[server.node.name][server.instance.name]
-
-    @commands.Cog.listener()
-    async def on_member_update(self, before: discord.Member, after: discord.Member):
-        # did a member change their roles?
-        if before.roles == after.roles:
-            return
-        for server in self.bot.servers.values():
-            player: Player = server.get_player(discord_id=after.id)
-            if not player:
-                ucid = await self.bot.get_ucid_by_member(after, verified=True)
-                if not ucid:
-                    return
-                roles = [
-                    self.bot.get_role(x) for x in self.get_config(server).get('VIP', {}).get('discord', [])
-                ]
-                if not roles:
-                    return
-                for role in set(before.roles) | set(after.roles):
-                    if role in roles:
-                        await server.send_to_dcs({
-                            'command': 'uploadUserRoles',
-                            'ucid': ucid,
-                            'roles': [x.id for x in after.roles]
-                        })
-                        break
 
 
 async def setup(bot: DCSServerBot):

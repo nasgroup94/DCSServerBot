@@ -17,23 +17,35 @@ instance2:
     timezone: Europe/Berlin                       # optional: timezone (default: local time)
     00-12: YYYYYYY
     12-24: NNNNNNN
+<<<<<<< HEAD
   action:                                        # at 04:00 and 08:00 LT ..
+=======
+  action:                                        # at 04:00 and 08:00 LT ...
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
     local_times:
     - 04:00
     - 08:00
     method: rotate                                # .. it will rotate ..
     populated: true                               # .. independently if players are flying or not.
-  # onMissionStart: load:Scripts/net/start.lua    # We will run a specific lua script on mission start
+  # onSimulationStart: load:Scripts/net/start.lua # We will run a specific lua script on server start
+  # onSimulationStop: load:Scripts/net/stop.lua   # We will run a specific lua script on server stop (restart will trigger stop and start!)
   # onMissionEnd: load:Scripts/net/end.lua        # We will run a specific lua script on mission end
   # onShutdown: run:shutdown /r                   # if the DCS server is shut down, the real PC will restart
 instance3:
   schedule:                                       # server "instance3" will run every day from noon to midnight
     00-12: NNNNNNN
     12-24: YYYYYYY
+<<<<<<< HEAD
   action:                                         # It will restart with a DCS server shutdown after 480 mins of mission time ..
     method: restart
     mission_time: 480
     populated: false                              # .. only, if nobody is on the server (or as soon as that happens afterwards)
+=======
+  action:                                         # It will restart with a DCS server shutdown after 480 mins of mission time ...
+    method: restart
+    mission_time: 480
+    populated: false                              # ... only if nobody is on the server (or as soon as that happens afterward)
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
     shutdown: true                                # shutdown the DCS server during the restart
 mission:
   schedule:

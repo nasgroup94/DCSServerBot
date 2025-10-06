@@ -41,14 +41,16 @@ class StatisticsFilter(ABC):
             return MissionFilter(period)
         elif MissionIDFilter.supports(bot, period):
             return MissionIDFilter(period)
+        elif TheatreFilter.supports(bot, period):
+            return TheatreFilter(period)
         elif MonthFilter.supports(bot, period):
             return MonthFilter(period)
-        elif PeriodFilter.supports(bot, period):
-            return PeriodFilter(period)
         elif CampaignFilter.supports(bot, period):
             return CampaignFilter(period)
         elif SquadronFilter.supports(bot, period):
             return SquadronFilter(period)
+        elif PeriodFilter.supports(bot, period):
+            return PeriodFilter(period)
         return None
 
 
@@ -68,7 +70,13 @@ class PeriodFilter(StatisticsFilter):
             "%Y%m%d %H:%M:%S",
             "%Y%m%d %H:%M",
             "%Y%m%d %H",
+<<<<<<< HEAD
             "%Y%m%d"
+=======
+            "%Y%m%d",
+            "%Y%m",
+            "%Y"
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         ]
 
         for fmt in formats:
@@ -78,7 +86,11 @@ class PeriodFilter(StatisticsFilter):
                 continue
 
         # If none of the formats match, raise an error
+<<<<<<< HEAD
         raise ValueError("Date format is not supported")
+=======
+        raise ValueError(f"Date format {date_str} is not supported")
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
     def filter(self, bot: DCSServerBot) -> str:
         if self.period and self.period.startswith('period:'):
@@ -92,7 +104,11 @@ class PeriodFilter(StatisticsFilter):
         elif period == 'today':
             return "DATE_TRUNC('day', s.hop_on) = current_date"
         elif period in PeriodFilter.list(bot):
+<<<<<<< HEAD
             return f"DATE(s.hop_on) > (DATE((now() AT TIME ZONE 'utc')) - interval '1 {period}')"
+=======
+            return f"s.hop_on > ((now() AT TIME ZONE 'utc') - interval '1 {period}')"
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         elif '-' in period:
             start, end = period.split('-')
             start = start.strip()
@@ -100,12 +116,23 @@ class PeriodFilter(StatisticsFilter):
             # avoid SQL injection
             pattern = re.compile(r'^\d+\s+(year|month|week|day|hour|minute)s?$')
             if pattern.match(end):
+<<<<<<< HEAD
                 return f"DATE(s.hop_on) > (DATE((now() AT TIME ZONE 'utc')) - interval '{end}')"
             else:
                 start = self.parse_date(start) if start else datetime(year=1970, month=1, day=1)
                 end = self.parse_date(end) if end else datetime.now(tz=timezone.utc)
                 return (f"DATE(s.hop_on) >= '{start.strftime('%Y-%m-%d %H:%M:%S')}'::TIMESTAMP AND "
                         f"COALESCE(DATE(s.hop_off), (now() AT TIME ZONE 'utc')) <= '{end.strftime('%Y-%m-%d %H:%M:%S')}'")
+=======
+                return f"s.hop_on > ((now() AT TIME ZONE 'utc') - interval '{end}')"
+            else:
+                start = self.parse_date(start) if start else datetime(year=1970, month=1, day=1)
+                end = self.parse_date(end) if end else datetime.now(tz=timezone.utc)
+                return (f"s.hop_on >= '{start.strftime('%Y-%m-%d %H:%M:%S')}'::TIMESTAMP AND "
+                        f"COALESCE(s.hop_off, (now() AT TIME ZONE 'utc')) <= '{end.strftime('%Y-%m-%d %H:%M:%S')}'")
+        else:
+            return "1 = 1"
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
 
     def format(self, bot: DCSServerBot) -> str:
@@ -121,6 +148,11 @@ class PeriodFilter(StatisticsFilter):
             return period.capitalize() + 's '
         elif period in ['day', 'week', 'month', 'year']:
             return period.capitalize() + 'ly '
+<<<<<<< HEAD
+=======
+        elif '-' in period:
+            return period + '\n'
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         else:
             return period
 
@@ -199,6 +231,25 @@ class MissionIDFilter(StatisticsFilter):
         return f'Mission '
 
 
+class TheatreFilter(StatisticsFilter):
+    @staticmethod
+    def list(bot: DCSServerBot) -> list[str]:
+        with bot.pool.connection() as conn:
+            rows = conn.execute("SELECT DISTINCT mission_theatre FROM missions ORDER BY 1").fetchall()
+            return [row[0] for row in rows]
+
+    @staticmethod
+    def supports(bot: DCSServerBot, period: str) -> bool:
+        return period and (period.startswith('theatre:') or period.startswith('terrain:'))
+
+    def filter(self, bot: DCSServerBot) -> str:
+        theatre = utils.sanitize_string(self.period[8:].strip())
+        return f"m.mission_theatre ILIKE '{theatre.lower()}'"
+
+    def format(self, bot: DCSServerBot) -> str:
+        return f'Missions on theatre "{self.period[8:].strip().title()}"\n'
+
+
 class MonthFilter(StatisticsFilter):
     @staticmethod
     def list(bot: DCSServerBot) -> list[str]:
@@ -255,11 +306,10 @@ class SquadronFilter(StatisticsFilter):
 class MissionStatisticsFilter(PeriodFilter):
 
     def filter(self, bot: DCSServerBot) -> str:
-        if self.period in [None, 'all']:
+        if self.period in self.list(bot):
+            return f"time > ((now() AT TIME ZONE 'utc') - interval '1 {self.period}')"
+        else:
             return '1 = 1'
-        elif self.period in self.list(bot):
-            return f"DATE(time) > (DATE((now() AT TIME ZONE 'utc')) - interval '1 {self.period}')"
-
 
 class StatsPagination(Pagination):
     def __init__(self, env: ReportEnv):
@@ -300,8 +350,9 @@ class PeriodTransformer(app_commands.Transformer):
                 periods.extend(flt.list(interaction.client))
             return [
                 app_commands.Choice(name=x.title(), value=x)
-                for x in sorted(periods)
+                for x in periods
                 if not current or current.casefold() in x.casefold()
             ][:25]
         except Exception as ex:
             interaction.client.log.exception(ex)
+            return []

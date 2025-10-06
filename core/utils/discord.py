@@ -7,12 +7,18 @@ import logging
 import os
 import re
 
+from contextlib import suppress
 from core import Status, utils
 from core.data.node import SortOrder, UploadStatus
 from core.services.registry import ServiceRegistry
 from core.translations import get_translation
+<<<<<<< HEAD
 from datetime import datetime
 from discord import app_commands, Interaction, SelectOption
+=======
+from datetime import datetime, timedelta
+from discord import app_commands, Interaction, SelectOption, ButtonStyle
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 from discord.ext import commands
 from discord.ui import Button, View, Select, Item, Modal, TextInput
 from enum import Enum, auto
@@ -24,7 +30,7 @@ from typing import Optional, cast, Union, TYPE_CHECKING, Iterable, Any, Callable
 from .helper import get_all_players, is_ucid, format_string
 
 if TYPE_CHECKING:
-    from core import Server, Player, Node, Instance, Plugin, Command
+    from core import Server, Player, Node, Instance, Plugin
     from services.bot import DCSServerBot
     from services.servicebus import ServiceBus
 
@@ -54,6 +60,7 @@ __all__ = [
     "escape_string",
     "print_ruler",
     "match",
+    "find_similar_names",
     "get_interaction_param",
     "get_all_linked_members",
     "NodeTransformer",
@@ -64,15 +71,19 @@ __all__ = [
     "airbase_autocomplete",
     "mission_autocomplete",
     "group_autocomplete",
-    "squadron_autocomplete",
-    "get_squadron",
+    "date_autocomplete",
     "server_selection",
     "get_ephemeral",
     "get_command",
     "ConfigModal",
     "DirectoryPicker",
     "NodeUploadHandler",
+<<<<<<< HEAD
     "ServerUploadHandler"
+=======
+    "ServerUploadHandler",
+    "DatabaseModal"
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 ]
 
 # Internationalisation
@@ -104,32 +115,33 @@ class PlayerType(Enum):
     HISTORY = auto()
 
 
-async def wait_for_single_reaction(bot: DCSServerBot, interaction: discord.Interaction,
-                                   message: discord.Message) -> discord.Reaction:
+async def wait_for_single_reaction(interaction: discord.Interaction, message: discord.Message) -> discord.Reaction:
     def check_press(react: discord.Reaction, user: discord.Member):
         return (react.message.channel == interaction.channel) & (user == member) & (react.message.id == message.id)
 
-    tasks = [
-        asyncio.create_task(bot.wait_for('reaction_add', check=check_press)),
-        asyncio.create_task(bot.wait_for('reaction_remove', check=check_press))
+    member = interaction.user
+    pending_tasks = [
+        asyncio.create_task(interaction.client.wait_for('reaction_add', check=check_press)),
+        asyncio.create_task(interaction.client.wait_for('reaction_remove', check=check_press))
     ]
-    try:
-        member = interaction.user
-        done, tasks = await asyncio.wait(tasks, timeout=120, return_when=asyncio.FIRST_COMPLETED)
-        if len(done) > 0:
-            react, _ = done.pop().result()
-            return react
-        else:
-            raise TimeoutError
-    finally:
-        for task in tasks:
-            task.cancel()
+
+    done, pending = await asyncio.wait(pending_tasks, timeout=120, return_when=asyncio.FIRST_COMPLETED)
+
+    # cancel pending tasks
+    for task in pending:
+        task.cancel()
+        await task
+
+    if not done:
+        raise TimeoutError
+
+    react, _ = done.pop().result()
+    return react
 
 
-async def selection_list(bot: DCSServerBot, interaction: discord.Interaction, data: list, embed_formatter, num: int = 5,
+async def selection_list(interaction: discord.Interaction, data: list, embed_formatter, num: int = 5,
                          marker: int = -1, marker_emoji='🔄'):
     """
-    :param bot: An instance of DCSServerBot class.
     :param interaction: A discord.Interaction instance representing the interaction event.
     :param data: A list of data to display in the embeds.
     :param embed_formatter: A function that formats the data into an embed.
@@ -164,7 +176,7 @@ async def selection_list(bot: DCSServerBot, interaction: discord.Interaction, da
             await message.add_reaction('⏹️')
             if ((j + 1) * num) < len(data):
                 await message.add_reaction('▶️')
-            react = await wait_for_single_reaction(bot, interaction, message)
+            react = await wait_for_single_reaction(interaction, message)
             await message.delete()
             if react.emoji == '◀️':
                 j -= 1
@@ -211,13 +223,15 @@ class SelectView(View):
             self.result = select.values[0]
         self.stop()
 
-    @discord.ui.button(label='OK', style=discord.ButtonStyle.green, custom_id='sl_ok')
+    # noinspection PyTypeChecker
+    @discord.ui.button(label='OK', style=ButtonStyle.green, custom_id='sl_ok')
     async def on_ok(self, interaction: Interaction, _: Button):
         # noinspection PyUnresolvedReferences
         await interaction.response.defer()
         self.stop()
 
-    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.red, custom_id='sl_cancel')
+    # noinspection PyTypeChecker
+    @discord.ui.button(label='Cancel', style=ButtonStyle.red, custom_id='sl_cancel')
     async def on_cancel(self, interaction: Interaction, _: Button):
         # noinspection PyUnresolvedReferences
         await interaction.response.defer()
@@ -255,30 +269,29 @@ async def selection(interaction: Union[discord.Interaction, commands.Context], *
                 msg = await interaction.original_response()
         else:
             msg = await interaction.send(embed=embed, view=view)
-        if await view.wait():
-            return None
-        return view.result
+        if not await view.wait():
+            return view.result
     finally:
-        try:
-            if msg:
+        if msg:
+            with suppress(discord.NotFound):
                 await msg.delete()
-        except discord.NotFound:
-            pass
 
 
 class YNQuestionView(View):
     def __init__(self):
         super().__init__(timeout=120)
-        self.result = False
+        self.result = None
 
-    @discord.ui.button(label='Yes', style=discord.ButtonStyle.green, custom_id='yn_yes')
+    # noinspection PyTypeChecker
+    @discord.ui.button(label='Yes', style=ButtonStyle.green, custom_id='yn_yes')
     async def on_yes(self, interaction: Interaction, _: Button):
         # noinspection PyUnresolvedReferences
         await interaction.response.defer()
         self.result = True
         self.stop()
 
-    @discord.ui.button(label='No', style=discord.ButtonStyle.red, custom_id='yn_no')
+    # noinspection PyTypeChecker
+    @discord.ui.button(label='No', style=ButtonStyle.red, custom_id='yn_no')
     async def on_no(self, interaction: Interaction, _: Button):
         # noinspection PyUnresolvedReferences
         await interaction.response.defer()
@@ -289,12 +302,14 @@ class YNQuestionView(View):
         interaction.client.log.exception(error)
 
 
-async def yn_question(ctx: Union[commands.Context, discord.Interaction], question: str,
-                      message: Optional[str] = None, ephemeral: Optional[bool] = True) -> bool:
+async def yn_question(ctx: Union[commands.Context, discord.Interaction], question: str, *,
+                      message: Optional[str] = None, embed: Optional[discord.Embed] = None,
+                      ephemeral: Optional[bool] = True) -> Optional[bool]:
     """
     :param ctx: The context in which the yn_question method is being called. It can be either a discord.py commands.Context object or a discord.Interaction object.
     :param question: The question to be displayed in the embedded message.
     :param message: An optional additional message to be displayed in the embedded message.
+    :param embed: An optional embed to be used. If None, then a default embed will be used. Replaces question and message.
     :param ephemeral: An optional boolean value indicating whether the message should be ephemeral (only visible to the user who triggered it). Default is True.
     :return: A boolean value indicating the result of the yn_question. True if the user answered "Yes", False if the user answered "No".
 
@@ -303,22 +318,22 @@ async def yn_question(ctx: Union[commands.Context, discord.Interaction], questio
     The yn_question method uses a custom view called YNQuestionView to handle the interaction. An embedded message is sent with the specified question and optional message, along with two
     * buttons for "Yes" and "No". The view listens for the user's button clicks and returns the corresponding boolean value.
     """
-    embed = discord.Embed(description=question, color=discord.Color.red())
-    if message is not None:
-        embed.add_field(name=message, value='_ _')
+    if not embed:
+        embed = discord.Embed(color=discord.Color.red())
+        if message is not None:
+            embed.description = message
+    embed.title = question
     if isinstance(ctx, discord.Interaction):
         ctx = await ctx.client.get_context(ctx)
     view = YNQuestionView()
     msg = await ctx.send(embed=embed, view=view, ephemeral=ephemeral)
     try:
-        if await view.wait():
-            return False
-        return view.result
+        if not await view.wait():
+            return view.result
     finally:
-        try:
-            await msg.delete()
-        except discord.NotFound:
-            pass
+        if msg:
+            with suppress(discord.NotFound):
+                await msg.delete()
 
 
 class PopulatedQuestionView(View):
@@ -326,35 +341,38 @@ class PopulatedQuestionView(View):
         super().__init__(timeout=120)
         self.result = None
 
-    @discord.ui.button(label='Yes', style=discord.ButtonStyle.green, custom_id='pl_yes')
+    # noinspection PyTypeChecker
+    @discord.ui.button(label='Yes', style=ButtonStyle.green, custom_id='pl_yes')
     async def on_yes(self, interaction: Interaction, _: Button):
         # noinspection PyUnresolvedReferences
         await interaction.response.defer()
         self.result = 'yes'
         self.stop()
 
-    @discord.ui.button(label='Later', style=discord.ButtonStyle.primary, custom_id='pl_later', emoji='⏱')
+    # noinspection PyTypeChecker
+    @discord.ui.button(label='Later', style=ButtonStyle.primary, custom_id='pl_later', emoji='⏱')
     async def on_later(self, interaction: Interaction, _: Button):
         # noinspection PyUnresolvedReferences
         await interaction.response.defer()
         self.result = 'later'
         self.stop()
 
-    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.red, custom_id='pl_cancel')
+    # noinspection PyTypeChecker
+    @discord.ui.button(label='Cancel', style=ButtonStyle.red, custom_id='pl_cancel')
     async def on_cancel(self, interaction: Interaction, _: Button):
         # noinspection PyUnresolvedReferences
         await interaction.response.defer()
         self.stop()
 
 
-async def populated_question(interaction: discord.Interaction, question: str, message: Optional[str] = None,
+async def populated_question(ctx: Union[commands.Context, discord.Interaction], question: str, message: Optional[str] = None,
                              ephemeral: Optional[bool] = True) -> Optional[str]:
     """
     Same as yn_question, but adds an option "Later". The usual use-case of this function would be
     if people are flying atm, and you want to ask to trigger an action that would affect their experience (aka stop
     the server).
 
-    :param interaction: The discord interaction object.
+    :param ctx: The discord context or interaction object.
     :param question: The question to be displayed in the embed.
     :param message: An optional message to be displayed in the embed.
     :param ephemeral: Whether the interaction response should be ephemeral. Default is True.
@@ -363,23 +381,17 @@ async def populated_question(interaction: discord.Interaction, question: str, me
     embed = discord.Embed(title='People are flying!', description=question, color=discord.Color.red())
     if message is not None:
         embed.add_field(name=message, value='_ _')
+    if isinstance(ctx, discord.Interaction):
+        ctx = await ctx.client.get_context(ctx)
     view = PopulatedQuestionView()
-    # noinspection PyUnresolvedReferences
-    if interaction.response.is_done():
-        msg = await interaction.followup.send(embed=embed, view=view, ephemeral=ephemeral)
-    else:
-        # noinspection PyUnresolvedReferences
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=ephemeral)
-        msg = await interaction.original_response()
+    msg = await ctx.send(embed=embed, view=view, ephemeral=ephemeral)
     try:
-        if await view.wait():
-            return None
-        return view.result
+        if not await view.wait():
+            return view.result
     finally:
-        try:
-            await msg.delete()
-        except discord.NotFound:
-            pass
+        if msg:
+            with suppress(discord.NotFound):
+                await msg.delete()
 
 
 def check_roles(roles: Iterable[Union[str, int]], member: Optional[discord.Member] = None) -> bool:
@@ -840,6 +852,35 @@ def match(name: str, member_list: list[discord.Member], min_score: Optional[int]
     return member_list[best_match_index] if best_match_index else None
 
 
+def find_similar_names(list1: list[str], list2: list[str], threshold: int = 90) -> list[tuple[str, str, int]]:
+    """
+    Compare two lists of usernames and find similar matches using fuzzy string matching.
+
+    Args:
+        list1: First list of usernames
+        list2: Second list of usernames
+        threshold: Minimum similarity score (0-100) to consider names as similar
+                  Default is 90 for high confidence matches
+
+    Returns:
+        List of tuples containing (name1, name2, similarity_score)
+    """
+    similar_names = []
+
+    for name1 in list1:
+        for name2 in list2:
+            # Calculate similarity ratio
+            similarity = fuzz.ratio(name1.lower(), name2.lower())
+
+            # If similarity is above threshold, add to results
+            if similarity >= threshold:
+                similar_names.append((name1, name2, similarity))
+
+    # Sort results by similarity score in descending order
+    similar_names.sort(key=lambda x: x[2], reverse=True)
+    return similar_names
+
+
 def get_interaction_param(interaction: discord.Interaction, name: str) -> Optional[Any]:
     """
     Returns the value of a specific parameter in a Discord interaction.
@@ -860,7 +901,7 @@ def get_interaction_param(interaction: discord.Interaction, name: str) -> Option
                     return param['value']
         return None
 
-    return inner(interaction.data['options'])
+    return inner(interaction.data.get('options', {}))
 
 
 def get_all_linked_members(interaction: discord.Interaction) -> list[discord.Member]:
@@ -879,26 +920,46 @@ def get_all_linked_members(interaction: discord.Interaction) -> list[discord.Mem
 
 class ServerTransformer(app_commands.Transformer):
     """
+    A transformer for Discord application commands that handles server selection.
 
-    :class:`ServerTransformer` is a class that is used for transforming and autocompleting servers as a selection for application commands.
+    This class converts string inputs into Server objects and provides autocomplete
+    functionality for server selection in slash commands.
 
-    .. attribute:: status
+    Attributes:
+        status (list[Status]): Optional list of status values to filter servers by.
+        maintenance (bool): Optional filter for servers in maintenance mode.
 
-        An optional attribute that specifies the list of status values to filter the servers by.
-
-        :type: list of :class:`Status`
-        :default: None
-
-    :param status: An optional parameter that specifies the list of status values to filter the servers by.
-    :type status: list of :class:`Status`
-
+    Example:
+        ```python
+        @app_commands.command(name="restart")
+        async def restart_server(
+            interaction: discord.Interaction,
+            server: app_commands.Transform[Server, ServerTransformer(status=[Status.RUNNING])]
+        ):
+            # Command will only show running servers in autocomplete
+            await server.restart()
+        ```
     """
+
     def __init__(self, *, status: list[Status] = None, maintenance: Optional[bool] = None):
         super().__init__()
         self.status: list[Status] = status
         self.maintenance = maintenance
 
     async def transform(self, interaction: discord.Interaction, value: Optional[str]) -> Server:
+        """
+        Converts a server name into a Server object.
+
+        Args:
+            interaction: The interaction context
+            value: The server name to convert
+
+        Returns:
+            The corresponding Server object
+
+        Raises:
+            app_commands.TransformerError: If server not found
+        """
         if value:
             server = interaction.client.servers.get(value)
             if not server:
@@ -908,6 +969,19 @@ class ServerTransformer(app_commands.Transformer):
         return server
 
     async def autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+        """
+        Provides server name suggestions for autocomplete.
+
+        Filters servers based on status, maintenance mode, and user input.
+        Only shows servers the user has permission to access.
+
+        Args:
+            interaction: The interaction context
+            current: Current text input by user
+
+        Returns:
+            List of server name suggestions (max 25)
+        """
         if not await interaction.command._check_can_run(interaction):
             return []
         try:
@@ -926,6 +1000,7 @@ class ServerTransformer(app_commands.Transformer):
             return choices[:25]
         except Exception as ex:
             interaction.client.log.exception(ex)
+            return []
 
 
 class NodeTransformer(app_commands.Transformer):
@@ -935,7 +1010,7 @@ class NodeTransformer(app_commands.Transformer):
     """
     async def transform(self, interaction: discord.Interaction, value: Optional[str]) -> Node:
         if value:
-            return next((x.node for x in interaction.client.servers.values() if x.node.name == value), None)
+            return interaction.client.node.all_nodes.get(value)
         else:
             return interaction.client.node
 
@@ -952,6 +1027,7 @@ class NodeTransformer(app_commands.Transformer):
             ]
         except Exception as ex:
             interaction.client.log.exception(ex)
+            return []
 
 
 class InstanceTransformer(app_commands.Transformer):
@@ -995,6 +1071,7 @@ class InstanceTransformer(app_commands.Transformer):
             ]
         except Exception as ex:
             interaction.client.log.exception(ex)
+            return []
 
 
 async def airbase_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[int]]:
@@ -1015,6 +1092,7 @@ async def airbase_autocomplete(interaction: discord.Interaction, current: str) -
         return choices[:25]
     except Exception as ex:
         interaction.client.log.exception(ex)
+        return []
 
 
 async def mission_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[int]]:
@@ -1024,9 +1102,18 @@ async def mission_autocomplete(interaction: discord.Interaction, current: str) -
     """
     def get_name(base_dir: str, path: str):
         try:
+<<<<<<< HEAD
             return os.path.relpath(path, base_dir).replace('.dcssb' + os.path.sep, '')[:-4]
         except ValueError:
             return os.path.basename(path)[:-4]
+=======
+            name = os.path.relpath(path, base_dir).replace('.dcssb' + os.path.sep, '')[:-4]
+            if len(name) > 100:
+                raise ValueError("Mission name exceeds maximum length")
+            return name
+        except ValueError:
+            return (os.path.basename(path)[:-4])[:100]
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
     if not await interaction.command._check_can_run(interaction):
         return []
@@ -1037,12 +1124,17 @@ async def mission_autocomplete(interaction: discord.Interaction, current: str) -
         base_dir = await server.get_missions_dir()
         choices: list[app_commands.Choice[int]] = [
             app_commands.Choice(name=get_name(base_dir, x), value=idx)
+<<<<<<< HEAD
             for idx, x in enumerate(server.settings['missionList'])
+=======
+            for idx, x in enumerate(await server.getMissionList())
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
             if not current or current.casefold() in get_name(base_dir, x).casefold()
         ]
         return sorted(choices, key=lambda choice: choice.name)[:25]
     except Exception as ex:
         interaction.client.log.exception(ex)
+        return []
 
 
 async def group_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
@@ -1058,29 +1150,19 @@ async def group_autocomplete(interaction: discord.Interaction, current: str) -> 
     ][:25]
 
 
-async def squadron_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[int]]:
-    if not await interaction.command._check_can_run(interaction):
-        return []
-    async with interaction.client.apool.connection() as conn:
-        cursor = await conn.execute("SELECT id, name FROM squadrons WHERE name ILIKE %s", ('%' + current + '%', ))
-        choices: list[app_commands.Choice[int]] = [
-            app_commands.Choice(name=row[1], value=row[0])
-            async for row in cursor
-        ]
-        return choices[:25]
+async def date_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    def get_date_range(date: str):
+        try:
+            end_date = datetime.strptime(date, '%Y-%m-%d')
+        except ValueError:
+            end_date = datetime.now()
+        for days_back in range(25):
+            yield end_date - timedelta(days=days_back)
 
-
-async def get_squadron(bot: DCSServerBot, *, name: Optional[str] = None,
-                       squadron_id: Optional[int] = None) -> Optional[dict]:
-    sql = "SELECT * FROM squadrons"
-    if name:
-        sql += " WHERE name = %(name)s"
-    elif squadron_id:
-        sql += " WHERE id = %(squadron_id)s"
-    async with bot.apool.connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cursor:
-            await cursor.execute(sql, {"name": name, "squadron_id": squadron_id})
-            return await cursor.fetchone()
+    return [
+        app_commands.Choice(name=x.strftime('%Y-%m-%d'), value=x.strftime('%Y-%m-%d'))
+        for x in get_date_range(current)
+    ][:25]
 
 
 class UserTransformer(app_commands.Transformer):
@@ -1136,7 +1218,7 @@ class PlayerTransformer(app_commands.Transformer):
     """
 
     """
-    def __init__(self, *, active: bool = False, watchlist: Optional[bool] = None, vip: Optional[bool] = None):
+    def __init__(self, *, active: Optional[bool] = None, watchlist: Optional[bool] = None, vip: Optional[bool] = None):
         super().__init__()
         self.active = active
         self.watchlist = watchlist
@@ -1170,6 +1252,7 @@ class PlayerTransformer(app_commands.Transformer):
             return choices[:25]
         except Exception as ex:
             interaction.client.log.exception(ex)
+            return []
 
 
 def _server_filter(server: Server) -> bool:
@@ -1246,30 +1329,46 @@ async def get_command(bot: DCSServerBot, *, name: str,
                     return inner
         elif cmd.name == name:
             return cmd
+    raise app_commands.CommandNotFound(name, [group] if group else [])
 
 
 class ConfigModal(Modal):
-    def __init__(self, title: str, config: dict, default: Optional[dict] = None, ephemeral: Optional[bool] = False):
+    def __init__(self, title: str, config: dict, old_values: Optional[dict] = None, ephemeral: Optional[bool] = False):
         super().__init__(title=title)
         self.ephemeral = ephemeral
         self.value = None
         self.config = config
-        if not default:
-            default = {}
+        if not old_values:
+            old_values = {}
         for k, v in self.config.items():
-            self.add_item(TextInput(custom_id=k,
-                                    label=v.get('label'),
-                                    style=discord.TextStyle(v.get('style', 1)),
-                                    placeholder=v.get('placeholder'),
-                                    default=str(default.get(k)) if default.get(k) is not None else "",
-                                    required=v.get('required', False),
-                                    min_length=v.get('min_length'),
-                                    max_length=v.get('max_length')))
+            self.add_item(TextInput(
+                custom_id=k,
+                label=v.get('label'),
+                style=discord.TextStyle(v.get('style', 1)),
+                placeholder=v.get('placeholder'),
+                default=self.parse(old_values.get(k)) if old_values.get(k) is not None else self.parse(v.get('default', '')),
+                required=v.get('required', False),
+                min_length=v.get('min_length'),
+                max_length=v.get('max_length')))
 
     @staticmethod
+<<<<<<< HEAD
     def unmap(value: str, t: str = None) -> Any:
+=======
+    def parse(value: Any) -> str:
+        if isinstance(value, bool):
+            return 'true' if value else 'false'
+        elif isinstance(value, datetime):
+            return value.strftime('%Y-%m-%d %H:%M:%S')
+        return str(value)
+
+    @staticmethod
+    def unparse(value: str, t: str = None) -> Any:
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         if not t or t == str:
             return value
+        elif not value:
+            return None
         elif t == int:
             return int(value)
         elif t == float:
@@ -1281,12 +1380,14 @@ class ConfigModal(Modal):
                 return False
             else:
                 raise ValueError(f"{value} is not a boolean!")
+        return value
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         # noinspection PyUnresolvedReferences
         await interaction.response.defer(ephemeral=self.ephemeral)
+        # noinspection PyUnresolvedReferences
         self.value = {
-            v.custom_id: self.unmap(v.value, self.config[v.custom_id].get('type')) if v.value else v.default
+            v.custom_id: self.unparse(v.value, self.config[v.custom_id].get('type'))
             for v in self.children
         }
         self.stop()
@@ -1339,12 +1440,25 @@ class DirectoryPicker(discord.ui.View):
                     ]
                 )
             )
+<<<<<<< HEAD
             self.children[0].disabled = False
         elif not init:
             self.children[0].disabled = True
         else:
             self.children[0].disabled = True
             embed = None
+=======
+            # noinspection PyUnresolvedReferences
+            self.children[0].disabled = False
+        elif not init:
+            # noinspection PyUnresolvedReferences
+            self.children[0].disabled = True
+        else:
+            # noinspection PyUnresolvedReferences
+            self.children[0].disabled = True
+            embed = None
+        # noinspection PyUnresolvedReferences
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         self.children[2].disabled = not self.dir
         return embed
 
@@ -1379,13 +1493,23 @@ class DirectoryPicker(discord.ui.View):
         except Exception as ex:
             interaction.client.log.exception(ex)
 
+<<<<<<< HEAD
     @discord.ui.button(label="Upload", style=discord.ButtonStyle.green, row=2)
+=======
+    # noinspection PyTypeChecker
+    @discord.ui.button(label="Upload", style=ButtonStyle.green, row=2)
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
     async def on_upload(self, interaction: discord.Interaction, button: Button):
         # noinspection PyUnresolvedReferences
         await interaction.response.defer()
         self.stop()
 
+<<<<<<< HEAD
     @discord.ui.button(label="Up", style=discord.ButtonStyle.secondary)
+=======
+    # noinspection PyTypeChecker
+    @discord.ui.button(label="Up", style=ButtonStyle.secondary)
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
     async def on_up(self, interaction: discord.Interaction, button: Button):
         # noinspection PyUnresolvedReferences
         await interaction.response.defer()
@@ -1393,7 +1517,12 @@ class DirectoryPicker(discord.ui.View):
             self.dir = os.path.dirname(self.dir)
             await self.refresh(interaction)
 
+<<<<<<< HEAD
     @discord.ui.button(label="Create", style=discord.ButtonStyle.primary)
+=======
+    # noinspection PyTypeChecker
+    @discord.ui.button(label="Create", style=ButtonStyle.primary)
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
     async def on_create(self, interaction: discord.Interaction, button: Button):
         class TextModal(Modal, title="Create Directory"):
             name = TextInput(label="Name", max_length=80, required=True)
@@ -1415,7 +1544,12 @@ class DirectoryPicker(discord.ui.View):
                 self.dir = modal.name.value
             await self.refresh(interaction)
 
+<<<<<<< HEAD
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red, row=2)
+=======
+    # noinspection PyTypeChecker
+    @discord.ui.button(label="Cancel", style=ButtonStyle.red, row=2)
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
     async def on_cancel(self, interaction: discord.Interaction, button: Button):
         # noinspection PyUnresolvedReferences
         await interaction.response.defer()
@@ -1475,8 +1609,13 @@ class NodeUploadHandler:
         embed = await view.render(init=True) or discord.utils.MISSING
         try:
             msg = await self.channel.send(embed=embed, view=view)
+<<<<<<< HEAD
         except Exception as ex:
             return
+=======
+        except Exception:
+            return None
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         try:
             if await view.wait():
                 await self.channel.send(_('Upload aborted.'))
@@ -1486,9 +1625,17 @@ class NodeUploadHandler:
             if not directory:
                 await self.channel.send(_('Upload aborted.'))
                 return None
+<<<<<<< HEAD
         finally:
             await msg.delete()
         return directory
+=======
+
+            return directory
+
+        finally:
+            await msg.delete()
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 
     async def upload_file(self, directory: str, att: discord.Attachment) -> UploadStatus:
         self.log.debug(f"Uploading {att.filename} to {self.node.name}:{directory} ...")
@@ -1531,11 +1678,21 @@ class NodeUploadHandler:
         ]
         # run all uploads in parallel
         tasks = [self.handle_attachment(directory, att) for att in attachments]
+<<<<<<< HEAD
         ret_vals = await asyncio.gather(*tasks)
 
         uploaded = []
         for idx, ret in enumerate(ret_vals):
             if ret == UploadStatus.OK:
+=======
+        ret_vals = await asyncio.gather(*tasks, return_exceptions=True)
+
+        uploaded = []
+        for idx, ret in enumerate(ret_vals):
+            if isinstance(ret, Exception):
+                self.log.error(f"Error during upload of {attachments[idx].filename}: {ret}")
+            elif ret == UploadStatus.OK:
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
                 uploaded.append(attachments[idx])
 
         # handle aftermath
@@ -1549,13 +1706,25 @@ class ServerUploadHandler(NodeUploadHandler):
         self.server = server
 
     @staticmethod
+<<<<<<< HEAD
     async def get_server(message: discord.Message) -> Optional[Server]:
+=======
+    async def get_server(message: discord.Message, channel_id: Optional[int] = None) -> Optional[Server]:
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
         from services.bot import BotService
         from services.servicebus import ServiceBus
 
         bot = ServiceRegistry.get(BotService).bot
+<<<<<<< HEAD
         server = bot.get_server(message)
         if not server and message.channel.id == bot.locals.get('channels', {}).get('admin'):
+=======
+        server = bot.get_server(message, admin_only=True)
+        if not channel_id:
+            channel_id = bot.locals.get('channels', {}).get('admin')
+
+        if not server and message.channel.id == channel_id:
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
             bus = ServiceRegistry.get(ServiceBus)
             ctx = await bot.get_context(message)
             server = await utils.server_selection(bus, ctx, title=_("To which server do you want to upload?"))
@@ -1563,3 +1732,191 @@ class ServerUploadHandler(NodeUploadHandler):
                 await ctx.send(_('Upload aborted.'))
                 return None
         return server
+<<<<<<< HEAD
+=======
+
+
+class DatabaseModal(Modal):
+    def __init__(
+            self,
+            node: Node,
+            table_name: str,
+            columns: list[str],
+            title: str = "Data Entry Form"
+    ):
+        super().__init__(title=title)
+        self.node = node
+        self.table_name = table_name
+        self.columns = columns
+        self.column_types = {}
+        self.response = {}
+
+    async def get_column_info(self) -> dict[str, dict[str, Any]]:
+        """
+        Fetch column information from the database schema using async psycopg3.
+        Returns a dictionary of column information including type, constraints, etc.
+        """
+        query = """
+                SELECT column_name,
+                       data_type,
+                       is_nullable,
+                       column_default,
+                       character_maximum_length,
+                       numeric_precision,
+                       numeric_scale
+                FROM information_schema.columns
+                WHERE table_name = %s
+                  AND column_name = ANY (%s::text[])
+                """
+
+        columns_info = {}
+        async with self.node.apool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                async for row in await cur.execute(query, (self.table_name, self.columns)):
+                    columns_info[row['column_name']] = {
+                        'data_type': row['data_type'],
+                        'is_nullable': row['is_nullable'] == 'YES',
+                        'default': row['column_default'],
+                        'max_length': row['character_maximum_length'],
+                        'numeric_precision': row['numeric_precision'],
+                        'numeric_scale': row['numeric_scale']
+                    }
+
+        return columns_info
+
+    async def setup_fields(self):
+        """
+        Set up TextInput fields based on column information
+        """
+        columns_info = await self.get_column_info()
+
+        for column_name in self.columns:
+            info = columns_info[column_name]
+
+            # Store column type for validation
+            self.column_types[column_name] = info['data_type']
+
+            # Configure TextInput based on data type
+            field_params: dict[str, Any] = {
+                'label': column_name.replace('_', ' ').title(),
+                'required': not info['is_nullable'],
+                'placeholder': f"Enter {column_name.replace('_', ' ')}..."
+            }
+
+            # Add max_length for text fields
+            if info['max_length']:
+                field_params['max_length'] = min(info['max_length'], 4000)  # Discord's limit
+
+            # Configure field based on data type
+            if info['data_type'] in ('integer', 'bigint', 'smallint'):
+                field_params['placeholder'] = 'Enter a number...'
+                field_params['max_length'] = 20
+            elif info['data_type'] in ('timestamp', 'timestamp without time zone'):
+                field_params['placeholder'] = 'YYYY-MM-DD HH:MM'
+            elif info['data_type'] in ('numeric', 'decimal'):
+                field_params['placeholder'] = f'Enter a decimal number...'
+                if info['numeric_precision']:
+                    max_digits = info['numeric_precision']
+                    if info['numeric_scale']:
+                        field_params['placeholder'] += f' (max {info["numeric_scale"]} decimal places)'
+                    field_params['max_length'] = max_digits + 1  # +1 for decimal point
+
+            # Create and add the TextInput field
+            text_input = TextInput(**field_params)
+            self.add_item(text_input)
+            setattr(self, column_name, text_input)
+
+    @staticmethod
+    def validate_integer(value: str) -> int:
+        """Validate and convert integer input"""
+        try:
+            return int(value)
+        except ValueError:
+            raise ValueError(f"'{value}' is not a valid integer")
+
+    @staticmethod
+    def validate_numeric(value: str, scale: int = None) -> float:
+        """Validate and convert numeric input"""
+        try:
+            num = float(value)
+            if scale is not None:
+                decimal_str = str(num).split('.')
+                if len(decimal_str) > 1 and len(decimal_str[1]) > scale:
+                    raise ValueError(f"Number can't have more than {scale} decimal places")
+            return num
+        except ValueError as e:
+            raise ValueError(f"'{value}' is not a valid number: {str(e)}")
+
+    @staticmethod
+    def validate_timestamp(value: str) -> datetime:
+        """Validate and convert timestamp input"""
+        try:
+            return datetime.strptime(value, '%Y-%m-%d %H:%M')
+        except ValueError:
+            raise ValueError("Invalid date format. Use YYYY-MM-DD HH:MM")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Validate and convert all inputs
+        validated_data = {}
+        columns_info = await self.get_column_info()
+
+        for column_name, column_info in columns_info.items():
+            value = getattr(self, column_name).value
+
+            # Skip empty optional fields
+            if not value and not getattr(self, column_name).required:
+                continue
+
+            # Validate based on column type
+            if column_info['data_type'] in ('integer', 'bigint', 'smallint'):
+                validated_data[column_name] = self.validate_integer(value)
+            elif column_info['data_type'] in ('numeric', 'decimal'):
+                validated_data[column_name] = self.validate_numeric(
+                    value,
+                    scale=column_info['numeric_scale']
+                )
+            elif column_info['data_type'] in ('timestamp', 'timestamp without time zone'):
+                validated_data[column_name] = self.validate_timestamp(value)
+            else:  # text, varchar, etc.
+                validated_data[column_name] = value
+
+        # Generate INSERT query
+        columns = ', '.join(validated_data.keys())
+        placeholders = ', '.join(['%s'] * len(validated_data))
+        query = f"""
+            INSERT INTO {self.table_name} ({columns})
+            VALUES ({placeholders})
+            RETURNING *
+        """
+
+        # Execute query
+        async with self.node.apool.connection() as conn:
+            async with conn.transaction():
+                async with conn.cursor(row_factory=dict_row) as cur:
+                    await cur.execute(query, list(validated_data.values()))
+                    self.response = await cur.fetchone()
+
+        # noinspection PyUnresolvedReferences
+        await interaction.response.send_message(
+            f"Data successfully inserted into {self.table_name}!",
+            ephemeral=True
+        )
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        """Handle any errors that occur during modal submission"""
+        if isinstance(error, ValueError):
+            # Handle validation errors
+            # noinspection PyUnresolvedReferences
+            await interaction.response.send_message(
+                f"Validation error: {str(error)}",
+                ephemeral=True
+            )
+        else:
+            # Handle other errors
+            # noinspection PyUnresolvedReferences
+            await interaction.response.send_message(
+                f"An error occurred: {str(error)}",
+                ephemeral=True
+            )
+            logger.error(f"Error while inserting a new row in {self.table_name}: {error}")
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b

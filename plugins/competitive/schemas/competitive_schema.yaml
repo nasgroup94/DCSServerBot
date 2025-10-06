@@ -1,0 +1,39 @@
+schema;instance_schema:
+  type: map
+  func: is_node
+  nullable: false
+  mapping:
+    regex;(.+):
+      include: 'element_schema'
+
+schema;element_schema:
+  type: map
+  func: is_element
+  nullable: false
+  mapping:
+    enabled: {type: bool, nullable: false}
+    silent: {type: bool, nullable: false}
+    join_on: {type: str, nullable: false, enum: ['birth', 'takeoff']}
+    win_on: {type: str, nullable: false, enum: ['survival', 'landing', 'rtb']}
+    kick_on_death: {type: bool, nullable: false}
+    kick_time: {type: int, nullable: false, range: {min: 0}}
+    end_mission: {type: bool, nullable: false}
+    delayed_start: {type: int, nullable: false, range: {min: 0}}
+    win_on_noshow: {type: int, nullable: false, range: {min: 60}}
+    credit_on_leave: {type: bool, nullable: false}
+
+type: map
+func: check_main_structure
+nullable: false
+mapping:
+  DEFAULT:
+    include: 'element_schema'
+  chat_commands:
+    include: 'chat_commands_schema'
+  commands:
+    include: 'commands_schema'
+  regex;(.+):
+    type: any
+    func: any_of
+    nullable: false
+    enum: ['element_schema', 'instance_schema']

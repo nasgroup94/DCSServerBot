@@ -7,6 +7,7 @@ import discord
 import json
 import luadata
 import os
+import platform
 import re
 import shutil
 import ssl
@@ -17,7 +18,7 @@ import xml.etree.ElementTree as ET
 from core import Extension, utils, Server, ServiceRegistry, get_translation, InstallException
 from discord.ext import tasks
 from extensions.srs import SRS
-from packaging import version as ver
+from packaging.version import parse
 from services.bot import BotService
 from services.servicebus import ServiceBus
 from typing import Optional, cast
@@ -26,7 +27,6 @@ from watchdog.observers import Observer
 
 _ = get_translation(__name__.split('.')[1])
 
-ports: dict[int, str] = dict()
 UPDATER_CODE = '4dctdtna'
 
 __all__ = [
@@ -35,19 +35,27 @@ __all__ = [
 
 
 class LotAtc(Extension, FileSystemEventHandler):
+    _ports: dict[int, str] = dict()
 
     CONFIG_DICT = {
         "port": {
             "type": int,
             "label": _("LotAtc Port"),
             "placeholder": _("Unique port number for LotAtc"),
-            "required": True
+            "required": True,
+            "default": 10310
         }
     }
 
     def __init__(self, server: Server, config: dict):
         self.home = os.path.join(server.instance.home, 'Mods', 'Services', 'LotAtc')
         super().__init__(server, config)
+        # check version incompatibility
+        if self.version and parse(self.version) >= parse('2.5.0') and sys.platform == 'win32':
+            winver = platform.win32_ver()
+            if winver[1] == '10.0.14393' and 'Server' in winver[3]:
+                raise InstallException("LotAtc 2.5+ does not run on Windows Server 2016 anymore!")
+
         self.observer: Optional[Observer] = None
         self.bus = ServiceRegistry.get(ServiceBus)
         self.gcis = {
@@ -80,8 +88,6 @@ class LotAtc(Extension, FileSystemEventHandler):
                                    "please specify it manually in your nodes.yaml!")
 
     async def prepare(self) -> bool:
-        global ports
-
         await self.update_instance(False)
         config = self.config.copy()
         if 'enabled' in config:
@@ -115,11 +121,12 @@ class LotAtc(Extension, FileSystemEventHandler):
                                                                              indent_level=0)).encode('utf-8'))
             self.log.debug(f"  => New {path} written.")
         port = self.locals.get('port', 10310)
-        if port in ports and ports[port] != self.server.name:
-            self.log.error(f"  => {self.server.name}: {self.name} port {port} already in use by server {ports[port]}!")
+        if type(self)._ports.get(port, self.server.name) != self.server.name:
+            self.log.error(
+                f"  => {self.server.name}: {self.name} port {port} already in use by server {type(self)._ports[port]}!")
             return False
         else:
-            ports[port] = self.server.name
+            type(self)._ports[port] = self.server.name
         return await super().prepare()
 
     # File Event Handlers
@@ -166,21 +173,21 @@ class LotAtc(Extension, FileSystemEventHandler):
         return utils.get_windows_version(os.path.join(self.home, r'bin', 'lotatc.dll'))
 
     async def render(self, param: Optional[dict] = None) -> dict:
-        if self.locals:
-            host = self.config.get('host', self.node.public_ip)
-            value = f"{host}:{self.locals.get('port', 10310)}"
-            show_passwords = self.config.get('show_passwords', True)
-            blue = self.locals.get('blue_password', '')
-            red = self.locals.get('red_password', '')
-            if show_passwords and (blue or red):
-                value += f"\n🔹 Pass: {blue}\n🔸 Pass: {red}"
-            return {
-                "name": "LotAtc",
-                "version": self.version,
-                "value": value
-            }
-        else:
-            return {}
+        if not self.locals:
+            raise NotImplementedError()
+
+        host = self.config.get('host', self.node.public_ip)
+        value = f"{host}:{self.locals.get('port', 10310)}"
+        show_passwords = self.config.get('show_passwords', True)
+        blue = self.locals.get('blue_password', '')
+        red = self.locals.get('red_password', '')
+        if show_passwords and (blue or red):
+            value += f"\n🔹 Pass: {blue}\n🔸 Pass: {red}"
+        return {
+            "name": "LotAtc",
+            "version": self.version,
+            "value": value
+        }
 
     def is_installed(self) -> bool:
         if not super().is_installed():
@@ -217,7 +224,7 @@ class LotAtc(Extension, FileSystemEventHandler):
     def get_inst_version(self) -> tuple[str, str]:
         path = os.path.join(self.get_inst_path(), 'server')
         versions = os.listdir(path)
-        major_version = max(versions, key=ver.parse)
+        major_version = max(versions, key=parse)
         path = os.path.join(path, major_version, 'Mods', 'services', 'LotAtc', 'bin')
         version = utils.get_windows_version(os.path.join(path, 'LotAtc.dll'))
         return major_version, version
@@ -225,21 +232,19 @@ class LotAtc(Extension, FileSystemEventHandler):
     async def check_for_updates(self) -> Optional[str]:
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(
                 ssl=ssl.create_default_context(cafile=certifi.where()))) as session:
-            async with session.get(f"https://tinyurl.com/{UPDATER_CODE}") as response:
+            async with session.get(f"https://tinyurl.com/{UPDATER_CODE}", proxy=self.node.proxy,
+                                   proxy_auth=self.node.proxy_auth) as response:
                 if response.status in [200, 302]:
                     root = ET.fromstring(await response.text(encoding='utf-8'))
                     for package in root.findall('.//PackageUpdate'):
                         name = package.find('Name')
-                        if name is not None and name.text == 'com.lotatc.server':
+                        if name is not None and name.text == 'com.lotatc.server.server23':
                             version = package.find('Version')
                             if version is not None:
-                                break
-                    else:
-                        return None
-                    _, inst_version = self.get_inst_version()
-                    if version.text != inst_version:
-                        return version.text
-                    return None
+                                _, inst_version = self.get_inst_version()
+                                if version.text != inst_version:
+                                    return version.text
+        return None
 
     def do_update(self):
         cwd = self.get_inst_path()
@@ -268,6 +273,7 @@ class LotAtc(Extension, FileSystemEventHandler):
         major_version, _ = self.get_inst_version()
         from_path = os.path.join(self.get_inst_path(), 'server', major_version)
         shutil.copytree(from_path, self.server.instance.home, dirs_exist_ok=True)
+        self.locals = self.load_config()
         self.log.info(f"  => {self.name} {self.version} installed into instance {self.server.instance.name}.")
 
     async def uninstall(self):
@@ -309,8 +315,8 @@ class LotAtc(Extension, FileSystemEventHandler):
                         "message": f"{self.name} updated to version {version} on node {self.node.name}."
                     }
                 })
-                if isinstance(self.config.get('autoupdate'), dict):
-                    config = self.config.get('autoupdate')
+                config = self.config.get('announce')
+                if config:
                     servers = []
                     for instance in self.node.instances:
                         if (instance.locals.get('extensions', {}).get(self.name) and
@@ -342,3 +348,8 @@ class LotAtc(Extension, FileSystemEventHandler):
                     })
         except Exception as ex:
             self.log.exception(ex)
+
+    async def get_ports(self) -> dict:
+        return {
+            "LotAtc": self.locals.get('port', 10310)
+        } if self.enabled else {}

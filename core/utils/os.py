@@ -1,6 +1,13 @@
+<<<<<<< HEAD
+=======
+from __future__ import annotations
+
+>>>>>>> 55886799f0bf4262d5b9eca3938483610cd4460b
 import aiohttp
+import asyncio
 import ipaddress
 import logging
+import miniupnpc
 import os
 import pickle
 import platform
@@ -9,6 +16,7 @@ import socket
 import stat
 import subprocess
 import sys
+
 if sys.platform == 'win32':
     import ctypes
     import pywintypes
@@ -18,7 +26,10 @@ if sys.platform == 'win32':
 from contextlib import closing, suppress
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Union, TYPE_CHECKING, Generator
+
+if TYPE_CHECKING:
+    from core import Node
 
 API_URLS = [
     'https://api4.my-ip.io/ip',
@@ -32,6 +43,7 @@ __all__ = [
     "is_open",
     "get_public_ip",
     "find_process",
+    "find_process_async",
     "is_process_running",
     "get_windows_version",
     "get_drive_space",
@@ -45,6 +57,9 @@ __all__ = [
     "set_password",
     "get_password",
     "delete_password",
+    "sanitize_filename",
+    "is_upnp_available",
+    "get_win32_error_message",
     "CloudRotatingFileHandler"
 ]
 
@@ -57,33 +72,54 @@ def is_open(ip, port):
         return s.connect_ex((ip, int(port))) == 0
 
 
-async def get_public_ip():
+async def get_public_ip(node: Optional[Node] = None):
     for url in API_URLS:
         with suppress(aiohttp.ClientError, ValueError):
             async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
+                async with session.get(url, proxy=node.proxy if node else None,
+                                       proxy_auth=node.proxy_auth if node else None) as resp:
                     return ipaddress.ip_address(await resp.text()).compressed
+    else:
+        raise TimeoutError("Public IP could not be retrieved.")
 
 
-def find_process(proc: str, instance: Optional[str] = None):
-    for p in psutil.process_iter(['cmdline']):
+def find_process(proc: str, instance: Optional[str] = None) -> Generator[psutil.Process, None, None]:
+    proc_set = {name.casefold() for name in proc.split("|")}
+
+    # Get all processes at once with their info
+    processes = {p.pid: p for p in psutil.process_iter(['name', 'cmdline'])}
+
+    # Filter by name first
+    matching_processes = {pid: p for pid, p in processes.items()
+                          if p.info['name'] and p.info['name'].casefold() in proc_set}
+
+    # Then check instance if needed
+    for p in matching_processes.values():
         try:
-            if os.path.basename(p.info['cmdline'][0]).casefold() in [proc.casefold() for proc in proc.split("|")]:
-                if instance:
-                    for c in p.info['cmdline']:
-                        if instance in c.replace('\\', '/').split('/'):
-                            return p
-                else:
-                    return p
-        except Exception:
+            if instance:
+                cmdline = p.info['cmdline']
+                if not cmdline:
+                    continue
+                if any(instance.casefold() in c.replace('\\', '/').casefold().split('/')
+                       for c in cmdline):
+                    yield p
+            else:
+                yield p
+        except (psutil.AccessDenied, psutil.NoSuchProcess, IndexError):
             continue
-    return None
+
+
+async def find_process_async(proc: str, instance: Optional[str] = None):
+    def _find_first_match():
+        return next(find_process(proc, instance), None)
+
+    return await asyncio.to_thread(_find_first_match)
 
 
 def is_process_running(process: Union[subprocess.Popen, psutil.Process]):
     if isinstance(process, subprocess.Popen):
         return process.poll() is None
-    elif isinstance(process, psutil.Process):
+    else:
         return process.is_running()
 
 
@@ -94,6 +130,7 @@ def get_windows_version(cmd: str) -> Optional[str]:
     if sys.platform != 'win32':
         return None
     try:
+        # noinspection PyUnresolvedReferences
         info = win32api.GetFileVersionInfo(os.path.expandvars(cmd), '\\')
         version = "%d.%d.%d.%d" % (info['FileVersionMS'] / MS_LSB_MULTIPLIER,
                                    info['FileVersionMS'] % MS_LSB_MULTIPLIER,
@@ -232,6 +269,72 @@ def delete_password(key: str, config_dir='config'):
         os.remove(os.path.join(config_dir, '.secret', f'{key}.pkl'))
     except FileNotFoundError:
         raise ValueError(key)
+
+
+def sanitize_filename(filename: str, base_directory: str) -> str:
+    """
+    Sanitizes an input filename to prevent relative path injection.
+    Ensures the file path is within the `base_directory`.
+
+    Args:
+        filename (str): The input filename to sanitize.
+        base_directory (str): The base directory where all downloads should be stored.
+
+    Returns:
+        str: A sanitized, safe file path.
+
+    Raises:
+        ValueError: If the filename contains invalid patterns or escapes the base directory.
+    """
+    # Ensure the base_directory is absolute
+    base_directory = os.path.abspath(base_directory)
+
+    # Resolve the filename into an absolute path
+    resolved_path = os.path.abspath(os.path.join(base_directory, filename))
+
+    # Ensure the resolved path is within the base directory
+    if not os.path.commonpath([base_directory, resolved_path]) == base_directory:
+        raise ValueError(f"Relative path injection attempt detected: {filename}")
+
+    # Optional: Check file name for illegal characters (e.g., reject ../)
+    if ".." in filename or filename.startswith("/"):
+        raise ValueError(f"Invalid filename detected: {filename}")
+
+    return resolved_path
+
+
+def get_win32_error_message(error_code: int):
+    # Load the system message corresponding to the error code
+    buffer = ctypes.create_unicode_buffer(512)
+    ctypes.windll.kernel32.FormatMessageW(
+        0x00001000,  # FORMAT_MESSAGE_FROM_SYSTEM
+        None,
+        error_code,
+        0,  # Default language
+        buffer,
+        len(buffer),
+        None
+    )
+    return buffer.value.strip()
+
+
+def is_upnp_available() -> bool:
+    try:
+        upnp = miniupnpc.UPnP()
+        devices = upnp.discover()  # Discover UPnP-enabled devices
+        if devices > 0:
+            if upnp.selectigd():
+                # UPnP is enabled and an IGD was found.
+                return True
+            else:
+                # UPnP is enabled, but no Internet Gateway Device (IGD) is selected
+                return False
+        else:
+            # No UPnP devices detected on the network.
+            return False
+    except Exception:
+        # A UPnP device was found, but no IGD was found.
+        return False
 
 
 class CloudRotatingFileHandler(RotatingFileHandler):
