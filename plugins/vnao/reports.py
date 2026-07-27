@@ -405,7 +405,7 @@ class Range(EmbedElement):
             #  - https://sourceforge.net/projects/portableapps/files/Google%20Chrome%20Portable/GoogleChromePortable64_109.0.5414.120_online.paf.exe/download
             # Update the browser_exectuable path parameter to it's location and it should work.
             if css_file:
-                hti = html2image.Html2Image(browser_executable="C:\\Users\\vnaon\\GoogleChromePortable64\\GoogleChromePortable.exe",
+                hti = html2image.Html2Image(browser_executable="C:\\Users\\naval\\GoogleChromePortable\\GoogleChromePortable.exe",
                                             custom_flags=['--default-background-color=00000000', '--hide-scrollbars'])
                 hti.output_path = temp_png.parent
                 hti.screenshot(

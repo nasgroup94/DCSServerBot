@@ -60,3 +60,8 @@ $BODY$;
 
 ALTER FUNCTION public.greenie_board_data_practice(text, text, text, integer, integer)
     OWNER TO dcsserverbot;
+
+
+SELECT *
+FROM
+publiic.greenie_board_data_practice('Shrike Test Server', 'F/A-18C_hornet', '%', 0, 1000)
